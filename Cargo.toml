@@ -1,0 +1,13 @@
+[package]
+name = "aftermath"
+version = "0.0.1"
+edition = "2021"
+description= "Currently this is an empty crate"
+license = "MIT OR Apache-2.0"
+
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+bumpalo = { version = "3.11.1", features = ["collections"] }
+num-complex = "0.4.2"
