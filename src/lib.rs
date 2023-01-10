@@ -1,5 +1,5 @@
 #![warn(clippy::pedantic)]
-#[allow(
+#[warn(
     missing_docs,
     missing_debug_implementations,
     missing_copy_implementations,
@@ -13,7 +13,7 @@
 mod expr;
 mod token_stream;
 
-pub use expr::AstBuildError;
+pub use expr::BuildError;
 pub use expr::Expr;
 pub use expr::InvalidToken;
 pub use expr::Operator;

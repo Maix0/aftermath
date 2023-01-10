@@ -2,32 +2,50 @@ use crate::token_stream::{self, Token};
 
 use bumpalo::Bump;
 
+/// A token Tree representing a whole Expression
+/// It lives inside an [Arena](bumpalo::Bump)
 #[derive(Debug, PartialEq)]
 pub enum Expr<'arena> {
+    /// A real number
     RealNumber {
+        /// The value of the real number
         val: f64,
     },
+    /// An imaginary number
     ImaginaryNumber {
+        /// The value of the imaginary number, without the `i` unit
         val: f64,
     },
+    /// Complex number
     ComplexNumber {
+        /// The value of the complex number's node
         val: num_complex::Complex64,
     },
+    /// A variable
     Variable {
+        /// The name of the variable
         name: &'arena mut str,
     },
+    /// A function call, with an variable amount of arguments
     FunctionCall {
+        /// Name of the function
         ident: &'arena mut str,
+        /// List of argument in order they appeard
         args: bumpalo::collections::Vec<'arena, &'arena mut Expr<'arena>>,
     },
+    /// An operation
     Operator {
+        /// The operator
         op: Operator,
+        /// Left side of the operation
         rhs: &'arena mut Expr<'arena>,
+        /// Right side of the operation
         lhs: &'arena mut Expr<'arena>,
     },
 }
 
 impl<'arena> Expr<'arena> {
+    /// Clone an AST with another backing [arena](bumpalo::Bump)
     #[allow(clippy::mut_from_ref)]
     pub fn clone_in(&self, arena: &'arena Bump) -> &'arena mut Self {
         use Expr::{ComplexNumber, FunctionCall, ImaginaryNumber, Operator, RealNumber, Variable};
@@ -56,6 +74,7 @@ impl<'arena> Expr<'arena> {
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 #[repr(u16)]
+#[allow(missing_docs)]
 pub enum Operator {
     Plus = 1,
     Minus = 2,
@@ -78,16 +97,15 @@ enum Associativity {
 
 impl Operator {
     #[must_use]
+    /// Get a static str representation of the
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Pow => "^",
-            Self::Plus => "+",
-            Self::Minus => "-",
+            Self::Plus | Self::UnaryPlus => "+",
+            Self::Minus | Self::UnaryMinus => "-",
             Self::Divide => "/",
             Self::Multiply => "*",
             Self::Modulo => "%",
-            Self::UnaryMinus => "-",
-            Self::UnaryPlus => "+",
         }
     }
 
@@ -103,7 +121,7 @@ impl Operator {
         }
     }
 
-    fn associativity(&self) -> Associativity {
+    fn associativity(self) -> Associativity {
         match self {
             Self::Pow => Associativity::Left,
             _ => Associativity::Right,
@@ -117,103 +135,47 @@ impl Operator {
 
 fn function_pass<'input>(
     mut iter: std::iter::Peekable<
-        impl Iterator<Item = Result<token_stream::Token<'input>, InvalidToken<'input>>> + 'input,
+        impl Iterator<Item = Result<Token<'input>, InvalidToken<'input>>> + 'input,
     >,
-) -> impl Iterator<Item = Result<token_stream::Token<'input>, InvalidToken<'input>>> + 'input {
-    // fn function_pass_end<'input>(
-    //     mut iter: std::iter::Peekable<
-    //         impl Iterator<Item = Result<token_stream::Token<'input>, InvalidToken<'input>>> + 'input,
-    //     >,
-    //     done: &std::cell::Cell<bool>,
-    // ) -> impl Iterator<Item = Result<token_stream::Token<'input>, InvalidToken<'input>>> + 'input
-    // {
-    //     let mut paren_count = 0u8;
-    //     let mut search_end = false;
-    //     std::iter::from_fn(move || {
-    //         let peek = iter.peek();
-    //         if search_end {
-    //             match peek {
-    //                 Some(Ok(Token::RightParenthesis)) if paren_count == 1 => {
-    //                     paren_count = 0;
-    //                     done.set(true);
-    //                     search_end = false;
-    //                     return Some(Ok(Token::Whitespace));
-    //                 }
-    //                 Some(Ok(Token::Comma)) => {
-    //                     search_end = false;
-    //                     done.set(true);
-    //                     return Some(Ok(Token::Whitespace));
-    //                 }
-    //                 Some(Ok(Token::RightParenthesis)) => {
-    //                     paren_count = paren_count
-    //                         .checked_sub(1)
-    //                         .ok_or(AstBuildError::MissingParenthesis)?;
-    //                 }
-    //                 Some(Ok(Token::LeftParenthesis)) => {
-    //                     paren_count = paren_count
-    //                         .checked_add(1)
-    //                         .ok_or(AstBuildError::MissingParenthesis)?;
-    //                 }
-    //             }
-    //         }
-
-    //     if matches!(peek, Some(Ok(token_stream::Token::Whitespace))) {
-    //         if search_end {
-    //             done.set(false);
-    //             let mut child_whitespace = std::cell::Cell::new(true);
-    //             let mut sub_iter = iter.by_ref().take_while(|e| !done.get());
-    //             let dyn_sub_iter = (&mut iter
-    //                 as &mut dyn Iterator<Item = Result<Token<'input>, InvalidToken<'input>>>);
-    //         } else {
-    //             search_end = true;
-    //             paren_count = 1;
-    //         }
-    //     }
-    //     iter.next()
-    // })
-    // }
-    // let done = true.into();
-    // function_pass_end(iter.peekable(), &done)
-    {
-        let mut need_sep = Option::<u8>::None;
-        std::iter::from_fn(move || {
-            if let Some(n) = need_sep.as_mut() {
-                *n -= 1;
-                if *n == 0 {
-                    need_sep = None;
-                    Some(Ok(token_stream::Token::Whitespace))
-                } else {
-                    iter.next()
-                }
+) -> impl Iterator<Item = Result<Token<'input>, InvalidToken<'input>>> + 'input {
+    let mut need_sep = None;
+    std::iter::from_fn(move || {
+        if let Some(n) = need_sep.as_mut() {
+            *n -= 1;
+            if *n == 0u8 {
+                need_sep = None;
+                Some(Ok(token_stream::Token::Whitespace))
             } else {
-                let next = iter.next();
-                match &next {
-                    Some(Ok(token_stream::Token::Ident(word))) if word.len() > 1 => {
-                        if let Some(Ok(token_stream::Token::LeftParenthesis)) = iter.peek() {
-                            need_sep = Some(2);
-                        }
-                    }
-                    Some(Ok(token_stream::Token::Comma)) => {
-                        need_sep = Some(1);
-                    }
-                    _ => {}
-                };
-                next
+                iter.next()
             }
-        })
-    }
+        } else {
+            let next = iter.next();
+            match &next {
+                Some(Ok(token_stream::Token::Ident(word))) if word.len() > 1 => {
+                    if let Some(Ok(token_stream::Token::LeftParenthesis)) = iter.peek() {
+                        need_sep = Some(2);
+                    }
+                }
+                Some(Ok(token_stream::Token::Comma)) => {
+                    need_sep = Some(1);
+                }
+                _ => {}
+            };
+            next
+        }
+    })
 }
 
 fn implicit_multiple_pass<'input>(
     mut iter: std::iter::Peekable<
-        impl Iterator<Item = Result<token_stream::Token<'input>, InvalidToken<'input>>> + 'input,
+        impl Iterator<Item = Result<Token<'input>, InvalidToken<'input>>> + 'input,
     >,
-) -> impl Iterator<Item = Result<token_stream::Token<'input>, InvalidToken<'input>>> + 'input {
-    let mut need_sep = Option::<u8>::None;
+) -> impl Iterator<Item = Result<Token<'input>, InvalidToken<'input>>> + 'input {
+    let mut need_sep = None;
     std::iter::from_fn(move || {
         if let Some(n) = need_sep.as_mut() {
             *n -= 1;
-            if *n == 0 {
+            if *n == 0u8 {
                 need_sep = None;
                 Some(Ok(token_stream::Token::Operator(Operator::Multiply)))
             } else {
@@ -245,9 +207,9 @@ fn implicit_multiple_pass<'input>(
 
 fn unary_pass<'input>(
     mut iter: std::iter::Peekable<
-        impl Iterator<Item = Result<token_stream::Token<'input>, InvalidToken<'input>>> + 'input,
+        impl Iterator<Item = Result<Token<'input>, InvalidToken<'input>>> + 'input,
     >,
-) -> impl Iterator<Item = Result<token_stream::Token<'input>, InvalidToken<'input>>> + 'input {
+) -> impl Iterator<Item = Result<Token<'input>, InvalidToken<'input>>> + 'input {
     let _next = iter.peek_mut().map(|next| match next {
         Ok(token_stream::Token::Operator(op @ Operator::Minus)) => {
             *op = Operator::UnaryMinus;
@@ -268,10 +230,10 @@ fn unary_pass<'input>(
         {
             match iter.peek_mut() {
                 Some(Ok(token_stream::Token::Operator(op @ Operator::Minus))) => {
-                    *op = Operator::UnaryMinus
+                    *op = Operator::UnaryMinus;
                 }
                 Some(Ok(token_stream::Token::Operator(op @ Operator::Plus))) => {
-                    *op = Operator::UnaryPlus
+                    *op = Operator::UnaryPlus;
                 }
                 _ => (),
             }
@@ -282,16 +244,22 @@ fn unary_pass<'input>(
 
 pub use token_stream::InvalidToken;
 
+/// Error returned by [Expr::parse](Expr::parse)
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AstBuildError<'input> {
+pub enum BuildError<'input> {
+    /// An underlying token in the input is wrong
     InvalidToken(InvalidToken<'input>),
+    /// At least one parenthesis is missing
     MissingParenthesis,
+    /// At least one operator is missing
     MissingOperator,
+    /// At least one operand is missing
     MissingOperand,
+    /// An unknown error occured
     UnkownError,
 }
 
-impl<'input> From<InvalidToken<'input>> for AstBuildError<'input> {
+impl<'input> From<InvalidToken<'input>> for BuildError<'input> {
     fn from(value: InvalidToken<'input>) -> Self {
         Self::InvalidToken(value)
     }
@@ -314,11 +282,15 @@ impl<'arena> std::fmt::Display for Expr<'arena> {
 // thread_local! {static CURRENT_LEVEL: std::cell::Cell<u16> = 0.into();}
 
 impl<'arena> Expr<'arena> {
+    /// Create an AST from an input str
+    ///
+    /// # Errors
+    /// This will error on any wrong input
     pub fn parse<'input, 'words: 'input + 'word, 'word: 'input>(
-        arena: &'arena bumpalo::Bump,
+        arena: &'arena Bump,
         input: &'input str,
         reserved_words: &'words [&'word str],
-    ) -> Result<&'arena mut Expr<'arena>, AstBuildError<'input>> {
+    ) -> Result<&'arena mut Expr<'arena>, BuildError<'input>> {
         let iter = token_stream::parse_tokens(input, reserved_words);
         let iter = function_pass(iter.peekable());
         let iter = implicit_multiple_pass(iter.peekable());
@@ -330,13 +302,13 @@ impl<'arena> Expr<'arena> {
     }
 
     fn parse_iter<'input, 'words: 'input + 'word, 'word: 'input>(
-        arena: &'arena bumpalo::Bump,
-        mut iter: impl Iterator<Item = Result<token_stream::Token<'input>, InvalidToken<'input>>>,
+        arena: &'arena Bump,
+        mut iter: impl Iterator<Item = Result<Token<'input>, InvalidToken<'input>>>,
         check_func_sep: &std::cell::Cell<bool>,
         // level: u16,
-    ) -> Result<&'arena mut Expr<'arena>, AstBuildError<'input>> {
+    ) -> Result<&'arena mut Expr<'arena>, BuildError<'input>> {
         let mut output = Vec::<&mut Self>::new();
-        let mut operator = Vec::<token_stream::Token<'input>>::new();
+        let mut operator = Vec::<Token<'input>>::new();
         let mut was_function_call = false;
         loop {
             if let Some(token) = iter.next() {
@@ -371,12 +343,12 @@ impl<'arena> Expr<'arena> {
                     Token::RightParenthesis => loop {
                         let Some(op) = operator.pop() else {
                             // print("Missing Parenthesis Error", level);
-                            return Err(dbg!(AstBuildError::MissingParenthesis));
+                            return Err(dbg!(BuildError::MissingParenthesis));
                         };
                         match op {
                             Token::LeftParenthesis => break,
                             Token::Operator(o @ (Operator::UnaryMinus | Operator::UnaryPlus)) => {
-                                let rhs = output.pop().ok_or(AstBuildError::MissingOperand)?;
+                                let rhs = output.pop().ok_or(BuildError::MissingOperand)?;
                                 output.push(arena.alloc(Expr::Operator {
                                     op: o,
                                     lhs: arena.alloc(Expr::RealNumber { val: 0.0 }),
@@ -384,8 +356,8 @@ impl<'arena> Expr<'arena> {
                                 }));
                             }
                             Token::Operator(o) => {
-                                let rhs = output.pop().ok_or(AstBuildError::MissingOperand)?;
-                                let lhs = output.pop().ok_or(AstBuildError::MissingOperand)?;
+                                let rhs = output.pop().ok_or(BuildError::MissingOperand)?;
+                                let lhs = output.pop().ok_or(BuildError::MissingOperand)?;
 
                                 output.push(arena.alloc(Expr::Operator { op: o, rhs, lhs }));
                             }
@@ -396,9 +368,9 @@ impl<'arena> Expr<'arena> {
             } else {
                 for op in operator.into_iter().rev() {
                     match op {
-                        Token::LeftParenthesis => return Err(AstBuildError::MissingParenthesis),
+                        Token::LeftParenthesis => return Err(BuildError::MissingParenthesis),
                         Token::Operator(o @ (Operator::UnaryMinus | Operator::UnaryPlus)) => {
-                            let rhs = output.pop().ok_or(AstBuildError::MissingOperand)?;
+                            let rhs = output.pop().ok_or(BuildError::MissingOperand)?;
                             output.push(arena.alloc(Expr::Operator {
                                 op: o,
                                 lhs: arena.alloc(Expr::RealNumber { val: 0.0 }),
@@ -406,8 +378,8 @@ impl<'arena> Expr<'arena> {
                             }));
                         }
                         Token::Operator(o) => {
-                            let rhs = output.pop().ok_or(AstBuildError::MissingOperand)?;
-                            let lhs = output.pop().ok_or(AstBuildError::MissingOperand)?;
+                            let rhs = output.pop().ok_or(BuildError::MissingOperand)?;
+                            let lhs = output.pop().ok_or(BuildError::MissingOperand)?;
 
                             output.push(arena.alloc(Expr::Operator { op: o, rhs, lhs }));
                         }
@@ -420,16 +392,16 @@ impl<'arena> Expr<'arena> {
         }
         //print(&format_args!("End: {}", output.len()), level);
         output.pop().ok_or(match output.len() {
-            0 => AstBuildError::UnkownError,
-            _ => AstBuildError::MissingOperator,
+            0 => BuildError::UnkownError,
+            _ => BuildError::MissingOperator,
         })
     }
 
     fn handle_comma<'input>(
-        arena: &'arena bumpalo::Bump,
+        arena: &'arena Bump,
         operator: &mut Vec<Token>,
         output: &mut Vec<&'arena mut Self>,
-    ) -> Result<&'arena mut Self, AstBuildError<'input>> {
+    ) -> Result<&'arena mut Self, BuildError<'input>> {
         loop {
             let Some(op) = operator.pop() else {
                 // print("Missing Parenthesis Error", level);
@@ -438,7 +410,7 @@ impl<'arena> Expr<'arena> {
             match op {
                 Token::LeftParenthesis => break,
                 Token::Operator(o @ (Operator::UnaryMinus | Operator::UnaryPlus)) => {
-                    let rhs = output.pop().ok_or(AstBuildError::MissingOperand)?;
+                    let rhs = output.pop().ok_or(BuildError::MissingOperand)?;
                     output.push(arena.alloc(Expr::Operator {
                         op: o,
                         lhs: arena.alloc(Expr::RealNumber { val: 0.0 }),
@@ -446,8 +418,8 @@ impl<'arena> Expr<'arena> {
                     }));
                 }
                 Token::Operator(o) => {
-                    let rhs = output.pop().ok_or(AstBuildError::MissingOperand)?;
-                    let lhs = output.pop().ok_or(AstBuildError::MissingOperand)?;
+                    let rhs = output.pop().ok_or(BuildError::MissingOperand)?;
+                    let lhs = output.pop().ok_or(BuildError::MissingOperand)?;
 
                     output.push(arena.alloc(Expr::Operator { op: o, rhs, lhs }));
                 }
@@ -456,17 +428,17 @@ impl<'arena> Expr<'arena> {
         }
         // print(&format_args!("Comma: {}", output.len()), level);
         output.pop().ok_or(match output.len() {
-            0 => AstBuildError::UnkownError,
-            _ => AstBuildError::MissingOperator,
+            0 => BuildError::UnkownError,
+            _ => BuildError::MissingOperator,
         })
     }
 
     fn handle_operator<'input>(
-        arena: &'arena bumpalo::Bump,
+        arena: &'arena Bump,
         op1: Operator,
         operator: &mut Vec<Token>,
         output: &mut Vec<&'arena mut Self>,
-    ) -> Result<(), AstBuildError<'input>> {
+    ) -> Result<(), BuildError<'input>> {
         loop {
             let Some(peek) = operator.last() else {break;};
             match peek {
@@ -478,7 +450,7 @@ impl<'arena> Expr<'arena> {
                     let op = operator.pop().unwrap();
                     match op {
                         Token::Operator(o @ (Operator::UnaryMinus | Operator::UnaryPlus)) => {
-                            let rhs = output.pop().ok_or(AstBuildError::MissingOperand)?;
+                            let rhs = output.pop().ok_or(BuildError::MissingOperand)?;
                             output.push(arena.alloc(Expr::Operator {
                                 op: o,
                                 lhs: arena.alloc(Expr::RealNumber { val: 0.0 }),
@@ -486,8 +458,8 @@ impl<'arena> Expr<'arena> {
                             }));
                         }
                         Token::Operator(o) => {
-                            let rhs = output.pop().ok_or(AstBuildError::MissingOperand)?;
-                            let lhs = output.pop().ok_or(AstBuildError::MissingOperand)?;
+                            let rhs = output.pop().ok_or(BuildError::MissingOperand)?;
+                            let lhs = output.pop().ok_or(BuildError::MissingOperand)?;
 
                             output.push(arena.alloc(Expr::Operator { op: o, rhs, lhs }));
                         }
@@ -502,11 +474,11 @@ impl<'arena> Expr<'arena> {
     }
 
     fn handle_whitespace<'input>(
-        arena: &'arena bumpalo::Bump,
+        arena: &'arena Bump,
         iter: &mut impl Iterator<Item = Result<Token<'input>, InvalidToken<'input>>>,
         check_func_sep: &std::cell::Cell<bool>,
         output: &mut [&'arena mut Self],
-    ) -> Result<(), AstBuildError<'input>> {
+    ) -> Result<(), BuildError<'input>> {
         check_func_sep.set(false);
         let parens_count = std::cell::Cell::new(1u16);
         let child_check_func_sep = std::cell::Cell::new(true);
@@ -520,21 +492,19 @@ impl<'arena> Expr<'arena> {
                 // );
                 match t {
                     Ok(Token::LeftParenthesis) => {
-                        parens_count.set(match parens_count.get().checked_add(1) {
-                            Some(n) => n,
-                            None => {
-                                error.set(true);
-                                255
-                            }
+                        parens_count.set(if let Some(n) = parens_count.get().checked_add(1) {
+                            n
+                        } else {
+                            error.set(true);
+                            255
                         });
                     }
                     Ok(Token::RightParenthesis) => {
-                        parens_count.set(match parens_count.get().checked_sub(1) {
-                            Some(n) => n,
-                            None => {
-                                error.set(true);
-                                dbg!(255)
-                            }
+                        parens_count.set(if let Some(n) = parens_count.get().checked_sub(1) {
+                            n
+                        } else {
+                            error.set(true);
+                            255
                         });
                     }
                     _ => (),
@@ -544,7 +514,7 @@ impl<'arena> Expr<'arena> {
         // print("LEVEL START", level);
         let ast = Self::parse_iter(
             arena,
-            &mut sub_iter as &mut dyn Iterator<Item = Result<Token<'input>, InvalidToken<'input>>>,
+            &mut sub_iter,
             &child_check_func_sep,
             // level + 1,
         );
@@ -556,7 +526,7 @@ impl<'arena> Expr<'arena> {
         //     level + 1,
         // );
         if error.get() {
-            return Err(dbg!(AstBuildError::UnkownError));
+            return Err(dbg!(BuildError::UnkownError));
         }
         check_func_sep.set(true);
         match output.last_mut() {
@@ -565,7 +535,7 @@ impl<'arena> Expr<'arena> {
             }
             _ => {
                 // print(&output, level);
-                return Err(AstBuildError::MissingOperator);
+                return Err(BuildError::MissingOperator);
             }
         }
         Ok(())
@@ -582,11 +552,11 @@ impl<'arena> Expr<'arena> {
             Expr::FunctionCall { ident, args } => {
                 write!(buf, "{ident}(")?;
                 for arg in args.iter().take(args.len() - 1) {
-                    arg.to_string_inner_min_parens(&mut buf as &mut dyn std::fmt::Write, None)?;
+                    arg.to_string_inner_min_parens(&mut buf, None)?;
                     write!(buf, ", ")?;
                 }
                 if let Some(arg) = args.last() {
-                    arg.to_string_inner_min_parens(&mut buf as &mut dyn std::fmt::Write, None)?;
+                    arg.to_string_inner_min_parens(&mut buf, None)?;
                 }
                 write!(buf, ")")?;
             }
@@ -609,42 +579,24 @@ impl<'arena> Expr<'arena> {
                 if parent_precedence.map_or(false, |p| op.class() < p) {
                     write!(buf, "(")?;
                     write!(buf, "{}", op.as_str())?;
-                    rhs.to_string_inner_min_parens(
-                        &mut buf as &mut dyn std::fmt::Write,
-                        Some(op.class()),
-                    )?;
+                    rhs.to_string_inner_min_parens(&mut buf, Some(op.class()))?;
                     write!(buf, ")")?;
                 } else {
                     write!(buf, "{}", op.as_str())?;
-                    rhs.to_string_inner_min_parens(
-                        &mut buf as &mut dyn std::fmt::Write,
-                        Some(op.class()),
-                    )?;
+                    rhs.to_string_inner_min_parens(&mut buf, Some(op.class()))?;
                 }
             }
             Expr::Operator { op, rhs, lhs } => {
                 if parent_precedence.map_or(false, |p| op.class() < p) {
                     write!(buf, "(")?;
-                    lhs.to_string_inner_min_parens(
-                        &mut buf as &mut dyn std::fmt::Write,
-                        Some(op.class()),
-                    )?;
+                    lhs.to_string_inner_min_parens(&mut buf, Some(op.class()))?;
                     write!(buf, " {} ", op.as_str())?;
-                    rhs.to_string_inner_min_parens(
-                        &mut buf as &mut dyn std::fmt::Write,
-                        Some(op.class()),
-                    )?;
+                    rhs.to_string_inner_min_parens(&mut buf, Some(op.class()))?;
                     write!(buf, ")")?;
                 } else {
-                    lhs.to_string_inner_min_parens(
-                        &mut buf as &mut dyn std::fmt::Write,
-                        Some(op.class()),
-                    )?;
+                    lhs.to_string_inner_min_parens(&mut buf, Some(op.class()))?;
                     write!(buf, " {} ", op.as_str())?;
-                    rhs.to_string_inner_min_parens(
-                        &mut buf as &mut dyn std::fmt::Write,
-                        Some(op.class()),
-                    )?;
+                    rhs.to_string_inner_min_parens(&mut buf, Some(op.class()))?;
                 }
             }
         }
@@ -656,11 +608,11 @@ impl<'arena> Expr<'arena> {
             Expr::FunctionCall { ident, args } => {
                 write!(buf, "{ident}(")?;
                 for arg in args.iter().take(args.len() - 1) {
-                    arg.to_string_inner(&mut buf as &mut dyn std::fmt::Write)?;
+                    arg.to_string_inner(&mut buf)?;
                     write!(buf, ", ")?;
                 }
                 if let Some(arg) = args.last() {
-                    arg.to_string_inner(&mut buf as &mut dyn std::fmt::Write)?;
+                    arg.to_string_inner(&mut buf)?;
                 }
                 write!(buf, ")")?;
             }
@@ -674,14 +626,14 @@ impl<'arena> Expr<'arena> {
                 ..
             } => {
                 write!(buf, "({}", op.as_str())?;
-                rhs.to_string_inner(&mut buf as &mut dyn std::fmt::Write)?;
+                rhs.to_string_inner(&mut buf)?;
                 write!(buf, ")")?;
             }
             Expr::Operator { op, rhs, lhs } => {
                 write!(buf, "(")?;
-                lhs.to_string_inner(&mut buf as &mut dyn std::fmt::Write)?;
+                lhs.to_string_inner(&mut buf)?;
                 write!(buf, " {} ", op.as_str())?;
-                rhs.to_string_inner(&mut buf as &mut dyn std::fmt::Write)?;
+                rhs.to_string_inner(&mut buf)?;
                 write!(buf, ")")?;
             }
         }
@@ -692,7 +644,7 @@ impl<'arena> Expr<'arena> {
 #[cfg(test)]
 mod tests {
     use super::token_stream::{
-        token_stream_to_string,
+        stream_to_string,
         Token::{Comma, Ident, LeftParenthesis, Literal, RightParenthesis, Whitespace},
     };
     use super::*;
@@ -729,7 +681,7 @@ mod tests {
         let iter = first_pass
             .flat_map(|token| [Ok(Whitespace), token].into_iter())
             .skip(1);
-        let res = token_stream_to_string(iter);
+        let res = stream_to_string(iter);
 
         assert_eq!(
             res.unwrap(),
@@ -745,7 +697,7 @@ mod tests {
         let iter = stream
             .flat_map(|token| [Ok(Whitespace), token].into_iter())
             .skip(1);
-        let res = token_stream_to_string(iter);
+        let res = stream_to_string(iter);
 
         assert_eq!(res.unwrap(), "- ( - 1 ) + - ( + a )");
     }

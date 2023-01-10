@@ -1,7 +1,38 @@
+#[cfg(test)]
 pub const RESTRICTED_WORD: &[&str] = &[
     "min", "max", "sqrt", "cbrt", "log", "ln", "exp", "atan", "tan", "acos", "cos", "asin", "sin",
     "cosh", "sinh", "tanh",
 ];
+
+#[cfg(test)]
+pub fn stream_to_string<'input>(
+    iter: impl Iterator<Item = Result<Token<'input>, InvalidToken<'input>>> + 'input,
+) -> Result<String, InvalidToken<'input>> {
+    fn iter_to_str<'input>(
+        iter: impl Iterator<Item = Result<Token<'input>, InvalidToken<'input>>> + 'input,
+    ) -> impl Iterator<Item = Result<std::borrow::Cow<'input, str>, InvalidToken<'input>>> + 'input
+    {
+        use std::borrow::Cow;
+        iter.map(|token| {
+            token.map(|t| match t {
+                Token::Ident(a) => Cow::Borrowed(a),
+                Token::Comma => Cow::Borrowed(","),
+                Token::LeftParenthesis => Cow::Borrowed("("),
+                Token::RightParenthesis => Cow::Borrowed(")"),
+                Token::Literal(v) => Cow::Owned(v.to_string()),
+                Token::Operator(o) => Cow::Borrowed(o.as_str()),
+                Token::Whitespace => Cow::Borrowed(" "),
+            })
+        })
+    }
+
+    let mut out = String::new();
+    for s in iter_to_str(iter) {
+        let s = s?;
+        out.push_str(&s);
+    }
+    Ok(out)
+}
 
 enum IterOnceOrMultiple<T, Iter: Iterator<Item = T>> {
     Once(std::iter::Once<T>),
@@ -91,12 +122,14 @@ impl<'input> Token<'input> {
                             .chain(std::iter::once(word))
                     })
                     .map(|i| i.map(Token::Ident))
-                    .map(IterEither::Left)
-                    .unwrap_or_else(|| {
-                        IterEither::Right(
-                            input.split("").filter(|s| !s.is_empty()).map(Token::Ident),
-                        )
-                    }),
+                    .map_or_else(
+                        || {
+                            IterEither::Right(
+                                input.split("").filter(|s| !s.is_empty()).map(Token::Ident),
+                            )
+                        },
+                        IterEither::Left,
+                    ),
             ));
         }
 
@@ -125,12 +158,11 @@ pub fn parse_tokens<'input, 'words: 'input, 'words_slice: 'words>(
     let mut stop = false;
     std::iter::from_fn(move || {
         let Some((mut index, mut chr)) = chars_index.next() else {
-            if !stop {
-                stop = true;
-                return Some(Token::from_str(&input[cur_chr..], reserved_words));
-            } else {
+            if stop {
                 return None;
             }
+            stop = true;
+            return Some(Token::from_str(&input[cur_chr..], reserved_words));
         };
         while get_chr_token_type(chr) == token_type {
             token_type = get_chr_token_type(chr);
@@ -149,8 +181,7 @@ pub fn parse_tokens<'input, 'words: 'input, 'words_slice: 'words>(
     })
     .flat_map(swap)
     .filter_map(|t| match t {
-        Ok(Token::Whitespace) => None,
-        Ok(Token::Ident(" ")) => None,
+        Ok(Token::Whitespace | Token::Ident(" ")) => None,
         Ok(Token::Ident("(")) => Some(Ok(Token::LeftParenthesis)),
         Ok(Token::Ident(")")) => Some(Ok(Token::RightParenthesis)),
         Ok(Token::Ident("+")) => Some(Ok(Token::Operator(crate::expr::Operator::Plus))),
@@ -205,35 +236,6 @@ fn swap<I: Iterator, E>(r: Result<I, E>) -> impl Iterator<Item = Result<I::Item,
         Ok(i) => SwapResult::Ok(i.map(Ok)),
         Err(e) => SwapResult::Err(core::iter::once(Err(e))),
     }
-}
-
-pub fn token_stream_to_string<'input>(
-    iter: impl Iterator<Item = Result<Token<'input>, InvalidToken<'input>>> + 'input,
-) -> Result<String, InvalidToken<'input>> {
-    fn iter_to_str<'input>(
-        iter: impl Iterator<Item = Result<Token<'input>, InvalidToken<'input>>> + 'input,
-    ) -> impl Iterator<Item = Result<std::borrow::Cow<'input, str>, InvalidToken<'input>>> + 'input
-    {
-        use std::borrow::Cow;
-        iter.map(|token| {
-            token.map(|t| match t {
-                Token::Ident(a) => Cow::Borrowed(a),
-                Token::Comma => Cow::Borrowed(","),
-                Token::LeftParenthesis => Cow::Borrowed("("),
-                Token::RightParenthesis => Cow::Borrowed(")"),
-                Token::Literal(v) => Cow::Owned(v.to_string()),
-                Token::Operator(o) => Cow::Borrowed(o.as_str()),
-                Token::Whitespace => Cow::Borrowed(" "),
-            })
-        })
-    }
-
-    let mut out = String::new();
-    for s in iter_to_str(iter) {
-        let s = s?;
-        out.push_str(&s);
-    }
-    Ok(out)
 }
 
 #[cfg(test)]
