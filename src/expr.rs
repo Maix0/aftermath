@@ -30,7 +30,7 @@ pub enum Expr<'arena> {
 impl<'arena> Expr<'arena> {
     #[allow(clippy::mut_from_ref)]
     pub fn clone_in(&self, arena: &'arena Bump) -> &'arena mut Self {
-        use Expr::*;
+        use Expr::{ComplexNumber, FunctionCall, ImaginaryNumber, Operator, RealNumber, Variable};
         arena.alloc(match self {
             RealNumber { val } => RealNumber { val: *val },
             ImaginaryNumber { val } => ImaginaryNumber { val: *val },
@@ -77,6 +77,7 @@ enum Associativity {
 }
 
 impl Operator {
+    #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Pow => "^",
@@ -342,76 +343,13 @@ impl<'arena> Expr<'arena> {
                 //print(&format_args!("Output Buffer: {output:?}"), level);
                 match token? {
                     Token::Whitespace => {
-                        check_func_sep.set(false);
-                        let parens_count = std::cell::Cell::new(1u16);
-                        let child_check_func_sep = std::cell::Cell::new(true);
-                        let error = std::cell::Cell::new(false);
-                        let mut sub_iter = iter
-                            .by_ref()
-                            .inspect(|t| {
-                                // print(
-                                //     &((child_whitespace.get() && !matches!(t, &Ok(Token::Comma)))
-                                //         || parens_count.get() != 0),
-                                // );
-                                match t {
-                                    Ok(Token::LeftParenthesis) => {
-                                        parens_count.set(match parens_count.get().checked_add(1) {
-                                            Some(n) => n,
-                                            None => {
-                                                error.set(true);
-                                                255
-                                            }
-                                        });
-                                    }
-                                    Ok(Token::RightParenthesis) => {
-                                        parens_count.set(match parens_count.get().checked_sub(1) {
-                                            Some(n) => n,
-                                            None => {
-                                                error.set(true);
-                                                dbg!(255)
-                                            }
-                                        });
-                                    }
-                                    _ => (),
-                                }
-                            })
-                            .take_while(|_| parens_count.get() != 0 || !child_check_func_sep.get());
-                        // print("LEVEL START", level);
-                        let ast = Self::parse_iter(
-                            arena,
-                            &mut sub_iter
-                                as &mut dyn Iterator<
-                                    Item = Result<Token<'input>, InvalidToken<'input>>,
-                                >,
-                            &child_check_func_sep,
-                            // level + 1,
-                        );
-                        // print(
-                        //     &format_args!(
-                        //         "LEVEL END: {}",
-                        //         if error.get() { "Error" } else { "No Error" }
-                        //     ),
-                        //     level + 1,
-                        // );
-                        if error.get() {
-                            return Err(dbg!(AstBuildError::UnkownError));
-                        }
-                        check_func_sep.set(true);
-                        match output.last_mut() {
-                            Some(Expr::FunctionCall { args, .. }) => {
-                                args.push(ast?);
-                            }
-                            _ => {
-                                // print(&output, level);
-                                return Err(AstBuildError::MissingOperator);
-                            }
-                        }
+                        Self::handle_whitespace(arena, &mut iter, check_func_sep, &mut output)?;
                     }
                     Token::Literal(v) => output.push(arena.alloc(Expr::RealNumber { val: v })),
                     Token::Ident(name) if name.len() == 1 => {
                         output.push(arena.alloc(Expr::Variable {
                             name: arena.alloc_str(name),
-                        }))
+                        }));
                     }
                     Token::Ident(name) => {
                         was_function_call = true;
@@ -419,94 +357,16 @@ impl<'arena> Expr<'arena> {
                         output.push(arena.alloc(Expr::FunctionCall {
                             ident: arena.alloc_str(name),
                             args: bumpalo::collections::Vec::with_capacity_in(2, arena),
-                        }))
+                        }));
                     }
 
                     Token::Comma => {
-                        loop {
-                            let Some(op) = operator.pop() else {
-                                // print("Missing Parenthesis Error", level);
-                                break;
-                            };
-                            match op {
-                                Token::LeftParenthesis => break,
-                                Token::Operator(
-                                    o @ (Operator::UnaryMinus | Operator::UnaryPlus),
-                                ) => {
-                                    let rhs = output.pop().ok_or(AstBuildError::MissingOperand)?;
-                                    output.push(arena.alloc(Expr::Operator {
-                                        op: o,
-                                        lhs: arena.alloc(Expr::RealNumber { val: 0.0 }),
-                                        rhs,
-                                    }));
-                                }
-                                Token::Operator(o) => {
-                                    let rhs = output.pop().ok_or(AstBuildError::MissingOperand)?;
-                                    let lhs = output.pop().ok_or(AstBuildError::MissingOperand)?;
-
-                                    output.push(arena.alloc(Expr::Operator { op: o, rhs, lhs }));
-                                }
-                                _ => (),
-                            }
-                        }
-                        // print(&format_args!("Comma: {}", output.len()), level);
-                        return output.pop().ok_or(match output.len() {
-                            0 => AstBuildError::UnkownError,
-                            _ => AstBuildError::MissingOperator,
-                        });
+                        Self::handle_comma(arena, &mut operator, &mut output)?;
                     }
                     t @ Token::LeftParenthesis if !was_function_call => operator.push(t),
                     Token::LeftParenthesis => was_function_call = false,
-                    Token::Operator(op1) => {
-                        loop {
-                            let Some(peek) = operator.last() else {break;};
-                            match peek {
-                                Token::LeftParenthesis => break,
-                                Token::Operator(op2)
-                                    if op2.class() > op1.class()
-                                        || (op1.class() == op2.class()
-                                            && op1.associativity() == Associativity::Left) =>
-                                {
-                                    let op = operator.pop().unwrap();
-                                    match op {
-                                        Token::Operator(
-                                            o @ (Operator::UnaryMinus | Operator::UnaryPlus),
-                                        ) => {
-                                            let rhs = output
-                                                .pop()
-                                                .ok_or(AstBuildError::MissingOperand)?;
-                                            output.push(arena.alloc(Expr::Operator {
-                                                op: o,
-                                                lhs: arena.alloc(Expr::RealNumber { val: 0.0 }),
-                                                rhs,
-                                            }));
-                                        }
-                                        Token::Operator(o) => {
-                                            let rhs = output
-                                                .pop()
-                                                .ok_or(AstBuildError::MissingOperand)?;
-                                            let lhs = output
-                                                .pop()
-                                                .ok_or(AstBuildError::MissingOperand)?;
-
-                                            output.push(arena.alloc(Expr::Operator {
-                                                op: o,
-                                                rhs,
-                                                lhs,
-                                            }));
-                                        }
-                                        _ => (),
-                                    }
-                                }
-                                _ => break,
-                                // dbg!("Done");
-                                // return Err(AstBuildError::InvalidToken(InvalidToken {
-                                //     span: None,
-                                // }));
-                                //}
-                            }
-                        }
-                        operator.push(Token::Operator(op1));
+                    Token::Operator(op) => {
+                        Self::handle_operator(arena, op, &mut operator, &mut output)?;
                     }
                     Token::RightParenthesis => loop {
                         let Some(op) = operator.pop() else {
@@ -565,6 +425,154 @@ impl<'arena> Expr<'arena> {
         })
     }
 
+    fn handle_comma<'input>(
+        arena: &'arena bumpalo::Bump,
+        operator: &mut Vec<Token>,
+        output: &mut Vec<&'arena mut Self>,
+    ) -> Result<&'arena mut Self, AstBuildError<'input>> {
+        loop {
+            let Some(op) = operator.pop() else {
+                // print("Missing Parenthesis Error", level);
+                break;
+            };
+            match op {
+                Token::LeftParenthesis => break,
+                Token::Operator(o @ (Operator::UnaryMinus | Operator::UnaryPlus)) => {
+                    let rhs = output.pop().ok_or(AstBuildError::MissingOperand)?;
+                    output.push(arena.alloc(Expr::Operator {
+                        op: o,
+                        lhs: arena.alloc(Expr::RealNumber { val: 0.0 }),
+                        rhs,
+                    }));
+                }
+                Token::Operator(o) => {
+                    let rhs = output.pop().ok_or(AstBuildError::MissingOperand)?;
+                    let lhs = output.pop().ok_or(AstBuildError::MissingOperand)?;
+
+                    output.push(arena.alloc(Expr::Operator { op: o, rhs, lhs }));
+                }
+                _ => (),
+            }
+        }
+        // print(&format_args!("Comma: {}", output.len()), level);
+        output.pop().ok_or(match output.len() {
+            0 => AstBuildError::UnkownError,
+            _ => AstBuildError::MissingOperator,
+        })
+    }
+
+    fn handle_operator<'input>(
+        arena: &'arena bumpalo::Bump,
+        op1: Operator,
+        operator: &mut Vec<Token>,
+        output: &mut Vec<&'arena mut Self>,
+    ) -> Result<(), AstBuildError<'input>> {
+        loop {
+            let Some(peek) = operator.last() else {break;};
+            match peek {
+                Token::Operator(op2)
+                    if op2.class() > op1.class()
+                        || (op1.class() == op2.class()
+                            && op1.associativity() == Associativity::Left) =>
+                {
+                    let op = operator.pop().unwrap();
+                    match op {
+                        Token::Operator(o @ (Operator::UnaryMinus | Operator::UnaryPlus)) => {
+                            let rhs = output.pop().ok_or(AstBuildError::MissingOperand)?;
+                            output.push(arena.alloc(Expr::Operator {
+                                op: o,
+                                lhs: arena.alloc(Expr::RealNumber { val: 0.0 }),
+                                rhs,
+                            }));
+                        }
+                        Token::Operator(o) => {
+                            let rhs = output.pop().ok_or(AstBuildError::MissingOperand)?;
+                            let lhs = output.pop().ok_or(AstBuildError::MissingOperand)?;
+
+                            output.push(arena.alloc(Expr::Operator { op: o, rhs, lhs }));
+                        }
+                        _ => (),
+                    }
+                }
+                _ => break,
+            }
+        }
+        operator.push(Token::Operator(op1));
+        Ok(())
+    }
+
+    fn handle_whitespace<'input>(
+        arena: &'arena bumpalo::Bump,
+        iter: &mut impl Iterator<Item = Result<Token<'input>, InvalidToken<'input>>>,
+        check_func_sep: &std::cell::Cell<bool>,
+        output: &mut [&'arena mut Self],
+    ) -> Result<(), AstBuildError<'input>> {
+        check_func_sep.set(false);
+        let parens_count = std::cell::Cell::new(1u16);
+        let child_check_func_sep = std::cell::Cell::new(true);
+        let error = std::cell::Cell::new(false);
+        let mut sub_iter = iter
+            .by_ref()
+            .inspect(|t| {
+                // print(
+                //     &((child_whitespace.get() && !matches!(t, &Ok(Token::Comma)))
+                //         || parens_count.get() != 0),
+                // );
+                match t {
+                    Ok(Token::LeftParenthesis) => {
+                        parens_count.set(match parens_count.get().checked_add(1) {
+                            Some(n) => n,
+                            None => {
+                                error.set(true);
+                                255
+                            }
+                        });
+                    }
+                    Ok(Token::RightParenthesis) => {
+                        parens_count.set(match parens_count.get().checked_sub(1) {
+                            Some(n) => n,
+                            None => {
+                                error.set(true);
+                                dbg!(255)
+                            }
+                        });
+                    }
+                    _ => (),
+                }
+            })
+            .take_while(|_| parens_count.get() != 0 || !child_check_func_sep.get());
+        // print("LEVEL START", level);
+        let ast = Self::parse_iter(
+            arena,
+            &mut sub_iter as &mut dyn Iterator<Item = Result<Token<'input>, InvalidToken<'input>>>,
+            &child_check_func_sep,
+            // level + 1,
+        );
+        // print(
+        //     &format_args!(
+        //         "LEVEL END: {}",
+        //         if error.get() { "Error" } else { "No Error" }
+        //     ),
+        //     level + 1,
+        // );
+        if error.get() {
+            return Err(dbg!(AstBuildError::UnkownError));
+        }
+        check_func_sep.set(true);
+        match output.last_mut() {
+            Some(Expr::FunctionCall { args, .. }) => {
+                args.push(ast?);
+            }
+            _ => {
+                // print(&output, level);
+                return Err(AstBuildError::MissingOperator);
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<'arena> Expr<'arena> {
     fn to_string_inner_min_parens(
         &self,
         mut buf: impl std::fmt::Write,
@@ -598,7 +606,7 @@ impl<'arena> Expr<'arena> {
                 rhs,
                 ..
             } => {
-                if parent_precedence.map(|p| op.class() < p).unwrap_or(false) {
+                if parent_precedence.map_or(false, |p| op.class() < p) {
                     write!(buf, "(")?;
                     write!(buf, "{}", op.as_str())?;
                     rhs.to_string_inner_min_parens(
@@ -615,7 +623,7 @@ impl<'arena> Expr<'arena> {
                 }
             }
             Expr::Operator { op, rhs, lhs } => {
-                if parent_precedence.map(|p| op.class() < p).unwrap_or(false) {
+                if parent_precedence.map_or(false, |p| op.class() < p) {
                     write!(buf, "(")?;
                     lhs.to_string_inner_min_parens(
                         &mut buf as &mut dyn std::fmt::Write,
@@ -683,7 +691,10 @@ impl<'arena> Expr<'arena> {
 
 #[cfg(test)]
 mod tests {
-    use super::token_stream::{token_stream_to_string, Token::*};
+    use super::token_stream::{
+        token_stream_to_string,
+        Token::{Comma, Ident, LeftParenthesis, Literal, RightParenthesis, Whitespace},
+    };
     use super::*;
 
     #[test]

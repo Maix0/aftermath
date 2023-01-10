@@ -60,7 +60,7 @@ impl<'input> Token<'input> {
         input: &'input str,
         reserved_words: &[&str],
     ) -> Result<impl Iterator<Item = Token<'input>>, InvalidToken<'input>> {
-        use IterOnceOrMultiple::*;
+        use IterOnceOrMultiple::{Multiple, Once};
 
         match input {
             " " => return Ok(Once(std::iter::once(Token::Whitespace))),
@@ -551,7 +551,7 @@ mod test {
             use super::*;
             #[test]
             fn reserved_words() {
-                RESTRICTED_WORD.iter().for_each(|word| {
+                for word in RESTRICTED_WORD.iter() {
                     let input = format!("randomword{word}");
                     let parsed =
                         parse_tokens(&input, RESTRICTED_WORD).collect::<Result<Vec<_>, _>>();
@@ -574,7 +574,7 @@ mod test {
                             Token::Ident(word),
                         ]
                     );
-                });
+                }
             }
         }
     }
