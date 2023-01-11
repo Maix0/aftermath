@@ -473,6 +473,7 @@ impl<'arena> Expr<'arena> {
         Ok(())
     }
 
+    #[allow(trivial_casts)]
     fn handle_whitespace<'input>(
         arena: &'arena Bump,
         iter: &mut impl Iterator<Item = Result<Token<'input>, InvalidToken<'input>>>,
@@ -514,7 +515,7 @@ impl<'arena> Expr<'arena> {
         // print("LEVEL START", level);
         let ast = Self::parse_iter(
             arena,
-            &mut sub_iter,
+            &mut sub_iter as &mut dyn Iterator<Item = Result<Token<'_>, InvalidToken<'_>>>,
             &child_check_func_sep,
             // level + 1,
         );
@@ -542,21 +543,22 @@ impl<'arena> Expr<'arena> {
     }
 }
 
+/// The real implementation of display
 impl<'arena> Expr<'arena> {
     fn to_string_inner_min_parens(
         &self,
-        mut buf: impl std::fmt::Write,
+        buf: &mut impl std::fmt::Write,
         parent_precedence: Option<u8>,
     ) -> std::fmt::Result {
         match self {
             Expr::FunctionCall { ident, args } => {
                 write!(buf, "{ident}(")?;
                 for arg in args.iter().take(args.len() - 1) {
-                    arg.to_string_inner_min_parens(&mut buf, None)?;
+                    arg.to_string_inner_min_parens(buf, None)?;
                     write!(buf, ", ")?;
                 }
                 if let Some(arg) = args.last() {
-                    arg.to_string_inner_min_parens(&mut buf, None)?;
+                    arg.to_string_inner_min_parens(buf, None)?;
                 }
                 write!(buf, ")")?;
             }
@@ -579,40 +581,40 @@ impl<'arena> Expr<'arena> {
                 if parent_precedence.map_or(false, |p| op.class() < p) {
                     write!(buf, "(")?;
                     write!(buf, "{}", op.as_str())?;
-                    rhs.to_string_inner_min_parens(&mut buf, Some(op.class()))?;
+                    rhs.to_string_inner_min_parens(buf, Some(op.class()))?;
                     write!(buf, ")")?;
                 } else {
                     write!(buf, "{}", op.as_str())?;
-                    rhs.to_string_inner_min_parens(&mut buf, Some(op.class()))?;
+                    rhs.to_string_inner_min_parens(buf, Some(op.class()))?;
                 }
             }
             Expr::Operator { op, rhs, lhs } => {
                 if parent_precedence.map_or(false, |p| op.class() < p) {
                     write!(buf, "(")?;
-                    lhs.to_string_inner_min_parens(&mut buf, Some(op.class()))?;
+                    lhs.to_string_inner_min_parens(buf, Some(op.class()))?;
                     write!(buf, " {} ", op.as_str())?;
-                    rhs.to_string_inner_min_parens(&mut buf, Some(op.class()))?;
+                    rhs.to_string_inner_min_parens(buf, Some(op.class()))?;
                     write!(buf, ")")?;
                 } else {
-                    lhs.to_string_inner_min_parens(&mut buf, Some(op.class()))?;
+                    lhs.to_string_inner_min_parens(buf, Some(op.class()))?;
                     write!(buf, " {} ", op.as_str())?;
-                    rhs.to_string_inner_min_parens(&mut buf, Some(op.class()))?;
+                    rhs.to_string_inner_min_parens(buf, Some(op.class()))?;
                 }
             }
         }
         Ok(())
     }
 
-    fn to_string_inner(&self, mut buf: impl std::fmt::Write) -> std::fmt::Result {
+    fn to_string_inner(&self, buf: &mut impl std::fmt::Write) -> std::fmt::Result {
         match self {
             Expr::FunctionCall { ident, args } => {
                 write!(buf, "{ident}(")?;
                 for arg in args.iter().take(args.len() - 1) {
-                    arg.to_string_inner(&mut buf)?;
+                    arg.to_string_inner(buf)?;
                     write!(buf, ", ")?;
                 }
                 if let Some(arg) = args.last() {
-                    arg.to_string_inner(&mut buf)?;
+                    arg.to_string_inner(buf)?;
                 }
                 write!(buf, ")")?;
             }
@@ -626,14 +628,14 @@ impl<'arena> Expr<'arena> {
                 ..
             } => {
                 write!(buf, "({}", op.as_str())?;
-                rhs.to_string_inner(&mut buf)?;
+                rhs.to_string_inner(buf)?;
                 write!(buf, ")")?;
             }
             Expr::Operator { op, rhs, lhs } => {
                 write!(buf, "(")?;
-                lhs.to_string_inner(&mut buf)?;
+                lhs.to_string_inner(buf)?;
                 write!(buf, " {} ", op.as_str())?;
-                rhs.to_string_inner(&mut buf)?;
+                rhs.to_string_inner(buf)?;
                 write!(buf, ")")?;
             }
         }

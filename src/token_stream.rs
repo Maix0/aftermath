@@ -1,10 +1,12 @@
 #[cfg(test)]
+// This item is only used for testing
 pub const RESTRICTED_WORD: &[&str] = &[
     "min", "max", "sqrt", "cbrt", "log", "ln", "exp", "atan", "tan", "acos", "cos", "asin", "sin",
     "cosh", "sinh", "tanh",
 ];
 
 #[cfg(test)]
+// This item is only used for testing
 pub fn stream_to_string<'input>(
     iter: impl Iterator<Item = Result<Token<'input>, InvalidToken<'input>>> + 'input,
 ) -> Result<String, InvalidToken<'input>> {
@@ -34,6 +36,7 @@ pub fn stream_to_string<'input>(
     Ok(out)
 }
 
+// Helper enum used in the `from_str` function
 enum IterOnceOrMultiple<T, Iter: Iterator<Item = T>> {
     Once(std::iter::Once<T>),
     Multiple(Iter),
@@ -52,6 +55,8 @@ impl<T, Iter: Iterator<Item = T>> Iterator for IterOnceOrMultiple<T, Iter> {
 
 #[derive(Clone, Debug, PartialEq)]
 #[repr(u8)]
+// A token is the lowest building block of the input
+// The weird constant assignment is used to check if a char is the same type as a token
 pub enum Token<'input> {
     Whitespace = Token::WHITESPACE,
     Literal(f64) = Token::LITERAL,
@@ -62,6 +67,8 @@ pub enum Token<'input> {
     Comma = Token::COMMA,
 }
 
+// Helper enum used to wrap two iterator in a single enum
+// This is to calm the type checker
 pub enum IterEither<L, R> {
     Left(L),
     Right(R),
@@ -79,6 +86,7 @@ impl<T, L: Iterator<Item = T>, R: Iterator<Item = T>> Iterator for IterEither<L,
 }
 
 impl<'input> Token<'input> {
+    /// Enum constant that are also the flag value of each type
     pub const WHITESPACE: u8 = 0;
     pub const LITERAL: u8 = 1;
     pub const IDENT: u8 = 2;
@@ -87,6 +95,8 @@ impl<'input> Token<'input> {
     pub const RIGHT_PARENS: u8 = 5;
     pub const COMMA: u8 = 6;
 
+    /// Create tokens from an input string.
+    /// It returns an Iterator so that multiples token can be returned (currently it only applies to idents)
     fn from_str(
         input: &'input str,
         reserved_words: &[&str],
@@ -110,6 +120,11 @@ impl<'input> Token<'input> {
         }
 
         if input.is_ascii() {
+            // if we are here, the input is an ident
+            // if the input str ends with an "reserved" word, we split it of.
+            // either way we split every letter into its own
+
+            // FIXME: maybe change this to not split if the ident is prefixed by an underscore `_`
             return Ok(Multiple(
                 reserved_words
                     .iter()
@@ -148,6 +163,8 @@ impl<'input> std::fmt::Display for InvalidToken<'input> {
     }
 }
 
+// The meat of the token stream generation
+// it split the input string into different tokens
 pub fn parse_tokens<'input, 'words: 'input, 'words_slice: 'words>(
     input: &'input str,
     reserved_words: &'words_slice [&'words str],
@@ -180,6 +197,7 @@ pub fn parse_tokens<'input, 'words: 'input, 'words_slice: 'words>(
         Some(Token::from_str(s, reserved_words))
     })
     .flat_map(swap)
+    // Current implementation problem: if the same character is present multiple times next to eachother, it is registed as an ident instead of multiple tokens
     .filter_map(|t| match t {
         Ok(Token::Whitespace | Token::Ident(" ")) => None,
         Ok(Token::Ident("(")) => Some(Ok(Token::LeftParenthesis)),
@@ -195,6 +213,7 @@ pub fn parse_tokens<'input, 'words: 'input, 'words_slice: 'words>(
     })
 }
 
+// get the token type of a char
 fn get_chr_token_type(chr: char) -> u8 {
     match chr {
         w if w.is_whitespace() => Token::WHITESPACE,
@@ -208,6 +227,7 @@ fn get_chr_token_type(chr: char) -> u8 {
     }
 }
 
+// Helper enum
 #[allow(clippy::type_complexity)]
 enum SwapResult<I, E>
 where
