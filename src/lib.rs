@@ -15,6 +15,7 @@ mod expr;
 mod token_stream;
 
 pub use eval::funcs;
+pub use eval::rpn;
 pub use eval::Arguments;
 pub use eval::CalcError;
 pub use eval::Context;

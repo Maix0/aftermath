@@ -1,12 +1,41 @@
-use std::borrow::Cow;
+use std::borrow::{Borrow, Cow};
 
 use std::collections::HashMap;
 pub struct Context {
     variables: HashMap<Cow<'static, str>, num_complex::Complex64>,
     funcs: HashMap<Cow<'static, str>, std::sync::Arc<dyn Func + Send + Sync>>,
+    func_names: std::collections::BTreeSet<(usize, Cow<'static, str>)>,
+}
+
+impl std::default::Default for Context {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Context {
+    /// Creates a new empty context
+    #[must_use]
+    pub fn new() -> Self {
+        Context {
+            variables: HashMap::default(),
+            funcs: HashMap::default(),
+            func_names: std::collections::BTreeSet::default(),
+        }
+    }
+
+    #[must_use]
+    /// Get an iterator over the reserved names for this context
+    /// You should only call this function once and cache its result
+    /// But you *can* call it multiples times
+    pub fn get_reserved_names(&self) -> Vec<&str> {
+        self.func_names
+            .iter()
+            .map(|(_, s)| s.borrow())
+            .rev()
+            .collect()
+    }
+
     /// # Errors
     ///
     /// Return an error if the requested binding isn't found in this context
@@ -29,7 +58,8 @@ impl Context {
         name: Cow<'static, str>,
         func: std::sync::Arc<dyn Func + Send + Sync>,
     ) {
-        self.funcs.insert(name, func);
+        self.funcs.insert(name.clone(), func);
+        self.func_names.insert((name.len(), name));
     }
     /// Insert the given binding into the context, overwriting if the binding already existed
     pub fn insert_binding(&mut self, name: Cow<'static, str>, binding: num_complex::Complex64) {
@@ -78,6 +108,54 @@ impl Context {
             }
         })
     }
+
+    #[allow(clippy::missing_panics_doc)]
+    /// Evaluate an RPN sequence in the current context
+    ///
+    /// # Errors
+    ///
+    /// This will return an error on three separate instances:
+    ///     - A User-Function has returned an error
+    ///     - A bindings is missing in the current context
+    ///     - A User-Function is missing in the current context
+    pub fn eval_rpn<'expr: 'arena, 'arena>(
+        &self,
+        rpn: &'expr rpn::RpnExpr<'arena>,
+    ) -> Result<num_complex::Complex64, CalcError> {
+        let mut val_stack = Vec::with_capacity(rpn.seq.len() / 2);
+        for token in &rpn.seq {
+            match token {
+                rpn::RpnToken::Literal(l) => val_stack.push(*l),
+                rpn::RpnToken::Binding(name) => val_stack.push(*self.get_binding(name)?),
+                rpn::RpnToken::Function(name, len) => {
+                    let val = self.get_func(name)?.call(
+                        self,
+                        Arguments {
+                            iter: ArgumentIterImpl::RPNIter({
+                                let start = val_stack.len() - *len as usize;
+                                val_stack.drain(start..)
+                            }),
+                            len: *len as usize,
+                        },
+                    )?;
+                    val_stack.push(val);
+                }
+                rpn::RpnToken::Op(op) => {
+                    let lhs = val_stack.pop().unwrap();
+                    let rhs = val_stack.pop().unwrap();
+                    val_stack.push(match op {
+                        rpn::Operator::Plus => lhs + rhs,
+                        rpn::Operator::Minus => lhs - rhs,
+                        rpn::Operator::Mul => lhs * rhs,
+                        rpn::Operator::Div => lhs / rhs,
+                        rpn::Operator::Mod => lhs % rhs,
+                        rpn::Operator::Pow => lhs.powc(rhs),
+                    });
+                }
+            }
+        }
+        Ok(val_stack.pop().unwrap())
+    }
 }
 
 #[derive(Debug)]
@@ -118,29 +196,49 @@ type ExprToComplexResult<'arena, 'context, 'expr> = fn(
 )
     -> Result<num_complex::Complex64, CalcError>;
 
-#[allow(clippy::type_complexity)]
-pub struct Arguments<'context, 'arena, 'expr: 'arena> {
-    iter: std::iter::Map<
-        std::iter::Zip<
-            std::iter::Map<
-                std::slice::Iter<'arena, &'arena mut crate::Expr<'arena>>,
-                RefRefMutToRef<crate::Expr<'arena>>,
-            >,
-            std::iter::Repeat<&'context Context>,
-        >,
-        ExprToComplexResult<'arena, 'context, 'expr>,
-    >,
+pub struct Arguments<'context, 'arena, 'expr: 'arena, 'f> {
+    iter: ArgumentIterImpl<'context, 'arena, 'expr, 'f>,
     len: usize,
 }
 
-impl<'context, 'arena, 'expr: 'arena> Iterator for Arguments<'context, 'arena, 'expr> {
+#[allow(clippy::type_complexity)]
+enum ArgumentIterImpl<'context, 'arena, 'expr: 'arena, 'v> {
+    ASTIter(
+        std::iter::Map<
+            std::iter::Zip<
+                std::iter::Map<
+                    std::slice::Iter<'arena, &'arena mut crate::Expr<'arena>>,
+                    RefRefMutToRef<crate::Expr<'arena>>,
+                >,
+                std::iter::Repeat<&'context Context>,
+            >,
+            ExprToComplexResult<'arena, 'context, 'expr>,
+        >,
+    ),
+    RPNIter(std::vec::Drain<'v, num_complex::Complex64>),
+}
+
+impl<'context, 'arena, 'expr: 'arena, 'v> Iterator
+    for ArgumentIterImpl<'context, 'arena, 'expr, 'v>
+{
+    type Item = Result<num_complex::Complex64, CalcError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::ASTIter(i) => i.next(),
+            Self::RPNIter(i) => i.next().map(Ok),
+        }
+    }
+}
+
+impl<'context, 'arena, 'expr: 'arena, 'v> Iterator for Arguments<'context, 'arena, 'expr, 'v> {
     type Item = Result<num_complex::Complex64, CalcError>;
     fn next(&mut self) -> Option<Self::Item> {
         self.iter.next()
     }
 }
 
-impl<'context, 'arena, 'expr: 'arena> Arguments<'context, 'arena, 'expr> {
+impl<'context, 'arena, 'expr: 'arena, 'v> Arguments<'context, 'arena, 'expr, 'v> {
     #[must_use]
     #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
@@ -154,11 +252,13 @@ impl<'context, 'arena, 'expr: 'arena> Arguments<'context, 'arena, 'expr> {
         let first_closure: RefRefMutToRef<crate::Expr<'arena>> = |e| &**e;
         let second_closure: ExprToComplexResult<'arena, 'context, 'expr> = |(e, c)| c.eval(e);
         Self {
-            iter: slice
-                .iter()
-                .map(first_closure)
-                .zip(std::iter::repeat(context))
-                .map(second_closure),
+            iter: ArgumentIterImpl::ASTIter(
+                slice
+                    .iter()
+                    .map(first_closure)
+                    .zip(std::iter::repeat(context))
+                    .map(second_closure),
+            ),
             len: slice.len(),
         }
     }
@@ -173,7 +273,7 @@ impl<'context, 'arena, 'expr: 'arena> Arguments<'context, 'arena, 'expr> {
     }
 }
 
-/// Describe an
+/// Describe an mathematical function that can be used in the expressions evaluated
 pub trait Func {
     /// The entry point of a user-defined function
     /// it will be called when you it is encountered
@@ -187,7 +287,7 @@ pub trait Func {
     fn call(
         &self,
         context: &Context,
-        args: Arguments<'_, '_, '_>,
+        args: Arguments<'_, '_, '_, '_>,
     ) -> Result<num_complex::Complex64, CalcError>;
 }
 
@@ -201,10 +301,10 @@ pub mod funcs {
                     pub const NAME: &str = $fname;
 
                     pub fn add_to_context(ctx: &mut Context) {
-                        ctx.funcs.insert(
+                        ctx.insert_func(
                             std::borrow::Cow::Borrowed(Self::NAME),
                             std::sync::Arc::new(Self) as std::sync::Arc<dyn Func + Send + Sync>,
-                    );
+                        )
                 }
             }
 
@@ -212,7 +312,7 @@ pub mod funcs {
                 fn call(
                     &self,
                     _: &Context,
-                    mut args: Arguments<'_, '_, '_>,
+                    mut args: Arguments<'_, '_, '_, '_>,
                 ) -> Result<num_complex::Complex64, CalcError> {
                     if [$(|$args_name: ()| $args_name),*].len() == args.len() {
                         $(let $args_name = args.next().ok_or(CalcError::InvalidArgumentCount)??;)*
@@ -291,4 +391,126 @@ pub mod funcs {
 
 
     }
+}
+
+pub mod rpn {
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub(crate) enum Operator {
+        Plus,
+        Minus,
+        Mul,
+        Div,
+        Mod,
+        Pow,
+    }
+
+    #[derive(Clone, Debug)]
+    pub(crate) enum RpnToken<'arena> {
+        Literal(num_complex::Complex64),
+        Binding(&'arena str),
+        Function(&'arena str, u16),
+        Op(Operator),
+    }
+
+    #[allow(clippy::module_name_repetitions)]
+    /// A complied AST into a linear stream of operation
+    /// Evaluating this stream of token is faster than evaluating an AST since the memory is linear
+    ///
+    /// It still retains the flexiblity and needs of the AST by keeping the bindings and functions as identifier
+    pub struct RpnExpr<'arena> {
+        pub(crate) seq: Vec<RpnToken<'arena>>,
+    }
+
+    impl<'arena> RpnExpr<'arena> {
+        /// Create an RPN token from an AST
+        pub fn from_ast(arena: &'arena bumpalo::Bump, ast: &crate::Expr<'_>) -> Self {
+            let mut rpn = Self {
+                seq: Vec::with_capacity(32),
+            };
+            Self::from_ast_inner(arena, ast, &mut rpn);
+            rpn
+        }
+
+        #[allow(clippy::enum_glob_use)]
+        fn from_ast_inner(
+            arena: &'arena bumpalo::Bump,
+            ast: &crate::Expr<'_>,
+            rpn: &mut RpnExpr<'arena>,
+        ) {
+            use crate::Expr::*;
+            match ast {
+                RealNumber { val } => rpn.seq.push(RpnToken::Literal(num_complex::Complex64 {
+                    re: *val,
+                    im: 0.0,
+                })),
+                ImaginaryNumber { val } => {
+                    rpn.seq.push(RpnToken::Literal(num_complex::Complex64 {
+                        re: 0.0,
+                        im: *val,
+                    }));
+                }
+                ComplexNumber { val } => rpn.seq.push(RpnToken::Literal(*val)),
+                Binding { name } => rpn.seq.push(RpnToken::Binding(arena.alloc_str(name))),
+                FunctionCall { ident, args } => {
+                    for expr in args {
+                        Self::from_ast_inner(arena, expr, rpn);
+                    }
+                    rpn.seq.push(RpnToken::Function(
+                        arena.alloc_str(ident),
+                        args.len()
+                            .try_into()
+                            .expect("Number of argument overflowed an u16"),
+                    ));
+                }
+                Operator { op, rhs, lhs } => {
+                    Self::from_ast_inner(arena, lhs, rpn);
+                    Self::from_ast_inner(arena, rhs, rpn);
+                    rpn.seq.push(RpnToken::Op(match op {
+                        crate::Operator::Minus | crate::Operator::UnaryMinus => {
+                            self::Operator::Minus
+                        }
+                        crate::Operator::Plus | crate::Operator::UnaryPlus => self::Operator::Plus,
+                        crate::Operator::Multiply => self::Operator::Mul,
+                        crate::Operator::Divide => self::Operator::Div,
+                        crate::Operator::Modulo => self::Operator::Mod,
+                        crate::Operator::Pow => self::Operator::Pow,
+                    }));
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    macro_rules! check_complex {
+        ($lhs:ident, $rhs:ident) => {
+            ($lhs.re - $rhs.re).abs() < f64::EPSILON && ($lhs.im - $rhs.im).abs() < f64::EPSILON
+        };
+    }
+
+    macro_rules! make_test {
+        ($name:ident: $input:literal => $res:block) => {
+            #[test]
+            fn $name() {
+                let input: &'static str = $input;
+                let bump = bumpalo::Bump::with_capacity(512);
+                let res: num_complex::Complex64 = ($res).into();
+
+                let mut ctx = super::Context::new();
+                super::funcs::add_all_to_context(&mut ctx);
+                let ast = crate::Expr::parse(&bump, input, &ctx.get_reserved_names()).unwrap();
+                let rpn = super::rpn::RpnExpr::from_ast(&bump, ast);
+
+                let res_ast = ctx.eval(&ast).unwrap();
+                let res_rpn = ctx.eval_rpn(&rpn).unwrap();
+
+                assert!(check_complex!(res_ast, res_rpn));
+                assert!(check_complex!(res_ast, res));
+            }
+        };
+    }
+
+    make_test! {simple_addition: "1 + 1" => {1.0 + 1.0}}
+    make_test! {function_call: "sin(1)" => {1f64.sin()}}
 }

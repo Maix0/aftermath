@@ -1,9 +1,5 @@
 #[cfg(test)]
-// This item is only used for testing
-pub const RESTRICTED_WORD: &[&str] = &[
-    "min", "max", "sqrt", "cbrt", "log", "ln", "exp", "atan", "tan", "acos", "cos", "asin", "sin",
-    "cosh", "sinh", "tanh",
-];
+pub const RESTRICTED_WORD: &[&str] = &["max", "min", "exp", "sin"];
 
 #[cfg(test)]
 // This item is only used for testing
@@ -123,18 +119,22 @@ impl<'input> Token<'input> {
             // if we are here, the input is an ident
             // if the input str ends with an "reserved" word, we split it of.
             // either way we split every letter into its own
-
-            // FIXME: maybe change this to not split if the ident is prefixed by an underscore `_`
             return Ok(Multiple(
                 reserved_words
                     .iter()
                     .find_map(|&word| input.ends_with(word).then_some((input, word)))
                     .map(|(input, word)| input.split_at(input.bytes().len() - word.bytes().len()))
                     .map(|(idents, word)| {
-                        idents
-                            .split("")
-                            .filter(|s| !s.is_empty())
-                            .chain(std::iter::once(word))
+                        if idents.starts_with('_') {
+                            IterEither::Left(std::iter::once(&word[1..]))
+                        } else {
+                            IterEither::Right(
+                                idents
+                                    .split("")
+                                    .filter(|s| !s.is_empty())
+                                    .chain(std::iter::once(word)),
+                            )
+                        }
                     })
                     .map(|i| i.map(Token::Ident))
                     .map_or_else(
@@ -165,10 +165,10 @@ impl<'input> std::fmt::Display for InvalidToken<'input> {
 
 // The meat of the token stream generation
 // it split the input string into different tokens
-pub fn parse_tokens<'input, 'words: 'input, 'words_slice: 'words>(
+pub fn parse_tokens<'input: 'words, 'words: 'word, 'word>(
     input: &'input str,
-    reserved_words: &'words_slice [&'words str],
-) -> impl Iterator<Item = Result<Token<'input>, InvalidToken<'input>>> {
+    reserved_words: &'words [&'word str],
+) -> impl Iterator<Item = Result<Token<'input>, InvalidToken<'input>>> + 'words {
     let mut token_type = Token::WHITESPACE;
     let mut chars_index = input.char_indices();
     let mut cur_chr = 0usize;
