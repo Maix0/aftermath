@@ -1,9 +1,13 @@
 [package]
+authors = ["Maieul Boyer <maieul.boyer@gmail.com>"]
 name = "aftermath"
 version = "0.0.1"
 edition = "2021"
-description= "Currently this is an empty crate"
+description= "A crate to parse and evaluate complex math expression"
 license = "MIT OR Apache-2.0"
+categories = ["parser-implementations", "mathematics"]
+keyword = ["expression", "evaluation"]
+repository = "https://github.com/Maix0/aftermath"
 
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
