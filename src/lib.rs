@@ -1,4 +1,5 @@
 #![warn(clippy::pedantic)]
+mod eval;
 #[warn(
     missing_docs,
     missing_debug_implementations,
@@ -13,6 +14,11 @@
 mod expr;
 mod token_stream;
 
+pub use eval::funcs;
+pub use eval::Arguments;
+pub use eval::CalcError;
+pub use eval::Context;
+pub use eval::Func;
 pub use expr::BuildError;
 pub use expr::Expr;
 pub use expr::InvalidToken;

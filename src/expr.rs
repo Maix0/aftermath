@@ -22,7 +22,7 @@ pub enum Expr<'arena> {
         val: num_complex::Complex64,
     },
     /// A variable
-    Variable {
+    Binding {
         /// The name of the variable
         name: &'arena mut str,
     },
@@ -48,12 +48,12 @@ impl<'arena> Expr<'arena> {
     /// Clone an AST with another backing [arena](bumpalo::Bump)
     #[allow(clippy::mut_from_ref)]
     pub fn clone_in(&self, arena: &'arena Bump) -> &'arena mut Self {
-        use Expr::{ComplexNumber, FunctionCall, ImaginaryNumber, Operator, RealNumber, Variable};
+        use Expr::{Binding, ComplexNumber, FunctionCall, ImaginaryNumber, Operator, RealNumber};
         arena.alloc(match self {
             RealNumber { val } => RealNumber { val: *val },
             ImaginaryNumber { val } => ImaginaryNumber { val: *val },
             ComplexNumber { val } => ComplexNumber { val: *val },
-            Variable { name } => Variable {
+            Binding { name } => Binding {
                 name: arena.alloc_str(name),
             },
             FunctionCall { ident, args } => FunctionCall {
@@ -319,7 +319,7 @@ impl<'arena> Expr<'arena> {
                     }
                     Token::Literal(v) => output.push(arena.alloc(Expr::RealNumber { val: v })),
                     Token::Ident(name) if name.len() == 1 => {
-                        output.push(arena.alloc(Expr::Variable {
+                        output.push(arena.alloc(Expr::Binding {
                             name: arena.alloc_str(name),
                         }));
                     }
@@ -572,7 +572,7 @@ impl<'arena> Expr<'arena> {
                 write!(buf, "({val})")?;
             }
             Expr::ComplexNumber { val } => write!(buf, "{val}")?,
-            Expr::Variable { name } => write!(buf, "{name}")?,
+            Expr::Binding { name } => write!(buf, "{name}")?,
             Expr::Operator {
                 op: op @ (Operator::UnaryMinus | Operator::UnaryPlus),
                 rhs,
@@ -621,7 +621,7 @@ impl<'arena> Expr<'arena> {
             Expr::RealNumber { val } => write!(buf, "({val})")?,
             Expr::ImaginaryNumber { val } => write!(buf, "({val}i)")?,
             Expr::ComplexNumber { val } => write!(buf, "({val})")?,
-            Expr::Variable { name } => write!(buf, "{name}")?,
+            Expr::Binding { name } => write!(buf, "{name}")?,
             Expr::Operator {
                 op: op @ (Operator::UnaryMinus | Operator::UnaryPlus),
                 rhs,
