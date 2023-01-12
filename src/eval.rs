@@ -196,8 +196,8 @@ type ExprToComplexResult<'arena, 'context, 'expr> = fn(
 )
     -> Result<num_complex::Complex64, CalcError>;
 
-pub struct Arguments<'context, 'arena, 'expr: 'arena, 'f> {
-    iter: ArgumentIterImpl<'context, 'arena, 'expr, 'f>,
+pub struct Arguments<'context, 'arena, 'expr: 'arena, 'v> {
+    iter: ArgumentIterImpl<'context, 'arena, 'expr, 'v>,
     len: usize,
 }
 
