@@ -6,8 +6,12 @@ edition = "2021"
 description= "A crate to parse and evaluate complex math expression"
 license = "MIT OR Apache-2.0"
 categories = ["parser-implementations", "mathematics"]
-keyword = ["expression", "evaluation"]
+keywords = ["expression", "evaluation"]
 repository = "https://github.com/Maix0/aftermath"
+
+[features]
+default = ["differentiation"]
+differentiation = []
 
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -15,3 +19,4 @@ repository = "https://github.com/Maix0/aftermath"
 [dependencies]
 bumpalo = { version = "3.11.1", features = ["collections"] }
 num-complex = "0.4.2"
+replace_with = { version = "0.1.7", default-features = false }

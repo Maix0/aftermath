@@ -14,6 +14,8 @@ impl std::default::Default for Context {
 }
 
 impl Context {
+    
+
     /// Creates a new empty context
     #[must_use]
     pub fn new() -> Self {
