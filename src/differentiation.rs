@@ -58,16 +58,19 @@ impl DiffContext {
         expr: &crate::Expr<'_>,
         respect_to: &str,
     ) -> Result<&'arena mut crate::Expr<'arena>, DiffError> {
-        Ok(self.differentiate_inner(arena, expr.clone_in(arena), respect_to)?)
+        self.differentiate_inner(arena, expr.clone_in(arena), respect_to)
     }
 
+    #[allow(clippy::too_many_lines)]
     fn differentiate_inner<'arena>(
         &self,
         arena: &'arena bumpalo::Bump,
         expr: &'arena mut crate::Expr<'arena>,
         respect_to: &str,
     ) -> Result<&'arena mut crate::Expr<'arena>, DiffError> {
-        use crate::Expr::*;
+        use crate::Expr::{
+            Binding, ComplexNumber, FunctionCall, ImaginaryNumber, Operator, RealNumber,
+        };
         use crate::Operator as Op;
         let expr_owned = std::mem::replace(expr, RealNumber { val: 0.0 });
         let res: crate::Expr = match expr_owned {
@@ -102,12 +105,12 @@ impl DiffContext {
                     rhs: v,
                     lhs: u_prime,
                 });
-                let addition = Operator {
+
+                Operator {
                     op: Op::Plus,
                     rhs: left_multiplication,
                     lhs: right_multiplication,
-                };
-                addition
+                }
             }
             Operator {
                 op: op @ (Op::UnaryMinus | Op::UnaryPlus),
@@ -151,7 +154,8 @@ impl DiffContext {
                 rhs,
                 lhs,
             } => {
-                // (u*v' - v*u') / v²
+                // f(x) = u / v
+                // f'(x) = (u*v' - v*u') / v²
                 let u = lhs;
                 let v = rhs;
                 let v_clone = v.clone_in(arena);
@@ -179,25 +183,22 @@ impl DiffContext {
                     lhs: v_clone,
                 });
 
-                let res = Operator {
+                Operator {
                     op: Op::Divide,
                     lhs: top,
                     rhs: bottom,
-                };
-
-                res
+                }
             }
-            RealNumber { .. } => RealNumber { val: 0.0 },
-            ImaginaryNumber { .. } => RealNumber { val: 0.0 },
-            ComplexNumber { .. } => RealNumber { val: 0.0 },
             Binding { name } if name == respect_to => RealNumber { val: 1.0 },
-            Binding { .. } => RealNumber { val: 0.0 },
+            Binding { .. } | RealNumber { .. } | ImaginaryNumber { .. } | ComplexNumber { .. } => {
+                RealNumber { val: 0.0 }
+            }
             FunctionCall { ident, args } => std::mem::replace(
                 self.diff_funcs
                     .get(ident)
                     .ok_or(DiffError::CalcError(crate::CalcError::MissingFunction))?
                     .get_diffed_func(
-                        &self,
+                        self,
                         arena,
                         ident,
                         args,
@@ -219,11 +220,17 @@ impl Default for DiffContext {
 }
 #[derive(Debug)]
 pub enum DiffError {
+    /// A function has had an error covered by [`CalcError`](crate::CalcError)
+    ///
+    /// Mostly used for invalid arguments count
     CalcError(crate::CalcError),
+    /// A user-defined error
+    ///
+    /// Is used when implementing custom function with differentiation logic
     Boxed(Box<dyn std::error::Error + Send + Sync>),
-    UnableToDifferentiate,
+    /// A function was encountered and it wasn't registered as differentiable
     DerivativeNotFound,
-    Panicked,
+    /// Unknown error encountered
     UnknownError,
 }
 
@@ -232,15 +239,6 @@ impl std::fmt::Display for DiffError {
         match self {
             Self::CalcError(c) => c.fmt(f),
             Self::Boxed(b) => b.fmt(f),
-            Self::UnableToDifferentiate => {
-                write!(f, "Unable to differentiate the given expression")
-            }
-            Self::Panicked => {
-                write!(
-                    f,
-                    "An function has panicked while differentiating a function"
-                )
-            }
             Self::UnknownError => {
                 write!(f, "An unknown error has occured")
             }
@@ -260,7 +258,9 @@ pub type Differentiate<'arena> = fn(
     respect_to: &str,
 ) -> Result<&'arena mut crate::Expr<'arena>, DiffError>;
 
-#[allow(clippy::mut_from_ref)]
+#[allow(clippy::mut_from_ref, clippy::missing_errors_doc)]
+/// A trait that mark a function as differentiable
+
 pub trait DifferentiableFunc: crate::Func + Send + Sync {
     /// Called when asked to differentiate an function
     ///
@@ -274,7 +274,8 @@ pub trait DifferentiableFunc: crate::Func + Send + Sync {
     ///
     /// the input to your function will be `f(g(x))` and your ouput will be `f'(g(x)) + g'(x)` for the above example
     ///
-    /// To differentiate the arguments, use the [`Differentiate`](Differentiate)
+    /// To differentiate the arguments, use the [`Differentiate`](Differentiate) function passed to
+    /// you
     fn get_diffed_func<'arena>(
         &self,
         ctx: &DiffContext,
@@ -289,8 +290,11 @@ pub trait DifferentiableFunc: crate::Func + Send + Sync {
 mod funcs {
     use super::DiffError;
     use super::DifferentiableFunc as DiffFunc;
-    use crate::funcs::*;
-    use crate::Expr::*;
+    use crate::funcs::{
+        Acos, Acosh, Asin, Asinh, Atan, Atanh, Cbrt, Cos, Cosh, Exp, Ln, Log, Norm, Sin, Sinh,
+        Sqrt, Tan, Tanh,
+    };
+    use crate::Expr::{FunctionCall, Operator, RealNumber};
     use crate::Operator as Op;
 
     impl DiffFunc for Sin {

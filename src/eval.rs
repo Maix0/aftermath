@@ -161,6 +161,7 @@ impl Context {
 
     /// Check that the given [`f64`](f64) can be considered equal to zero
     /// It uses the field [`zero_precision`](Context::zero_precision) to get a range of values `(-zero_precision, +zero_precision)` this considered equal to zero
+    #[must_use]
     pub fn is_zero(&self, f: f64) -> bool {
         f.abs() < self.zero_precision
     }
