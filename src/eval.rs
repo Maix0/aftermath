@@ -2,6 +2,7 @@ use std::borrow::{Borrow, Cow};
 
 use std::collections::HashMap;
 pub struct Context {
+    pub zero_precision: f64,
     variables: HashMap<Cow<'static, str>, num_complex::Complex64>,
     funcs: HashMap<Cow<'static, str>, std::sync::Arc<dyn Func + Send + Sync>>,
     func_names: std::collections::BTreeSet<(usize, Cow<'static, str>)>,
@@ -14,12 +15,11 @@ impl std::default::Default for Context {
 }
 
 impl Context {
-    
-
     /// Creates a new empty context
     #[must_use]
     pub fn new() -> Self {
         Context {
+            zero_precision: f64::EPSILON,
             variables: HashMap::default(),
             funcs: HashMap::default(),
             func_names: std::collections::BTreeSet::default(),
@@ -157,6 +157,12 @@ impl Context {
             }
         }
         Ok(val_stack.pop().unwrap())
+    }
+
+    /// Check that the given [`f64`](f64) can be considered equal to zero
+    /// It uses the field [`zero_precision`](Context::zero_precision) to get a range of values `(-zero_precision, +zero_precision)` this considered equal to zero
+    pub fn is_zero(&self, f: f64) -> bool {
+        f.abs() < self.zero_precision
     }
 }
 
@@ -348,19 +354,20 @@ pub mod funcs {
         Conj::add_to_context(ctx);
     }
 
-    pub fn add_real_functions(ctx: &mut Context) {
+    pub fn add_classic_functions(ctx: &mut Context) {
         Exp::add_to_context(ctx);
         Ln::add_to_context(ctx);
         Sqrt::add_to_context(ctx);
         Cbrt::add_to_context(ctx);
         Log::add_to_context(ctx);
+        Sign::add_to_context(ctx);
     }
 
     pub fn add_all_to_context(ctx: &mut Context) {
         add_trigonometry(ctx);
         add_hyperbolic_trigonometry(ctx);
         add_complex(ctx);
-        add_real_functions(ctx);
+        add_classic_functions(ctx);
     }
 
     define_func! {
@@ -389,9 +396,39 @@ pub mod funcs {
         Ln("ln"):       [arg]       => {arg.ln()};
         Sqrt("sqrt"):   [arg]       => {arg.sqrt()};
         Cbrt("cbrt"):   [arg]       => {arg.cbrt()};
-        Log("log"):     [arg, base] => {arg.log(base.re)}
+        Log("log"):     [arg, base] => {arg.log(base.re)};
+    }
 
+    pub struct Sign;
+    impl Sign {
+        pub const NAME: &str = "sign";
+        pub fn add_to_context(ctx: &mut Context) {
+            ctx.insert_func(Self::NAME.into(), std::sync::Arc::from(Self) as _);
+        }
+    }
 
+    impl Func for Sign {
+        fn call(
+            &self,
+            context: &Context,
+            mut args: Arguments<'_, '_, '_, '_>,
+        ) -> Result<num_complex::Complex64, CalcError> {
+            let Some(input) = args.next() else {return Err(CalcError::InvalidArgumentCount);};
+            let None = args.next() else {return Err(CalcError::InvalidArgumentCount);};
+            let input = input?;
+
+            if context.is_zero(input.im) {
+                if context.is_zero(input.re.abs()) {
+                    Ok(num_complex::Complex64 { re: 0.0, im: 0.0 })
+                } else if input.re > 0.0 {
+                    Ok(num_complex::Complex64 { re: 1.0, im: 0.0 })
+                } else {
+                    Ok(num_complex::Complex64 { re: -1.0, im: 0.0 })
+                }
+            } else {
+                Err(CalcError::InvalidInput)
+            }
+        }
     }
 }
 

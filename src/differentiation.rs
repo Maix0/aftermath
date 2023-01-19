@@ -14,6 +14,12 @@ impl std::ops::Deref for DiffContext {
     }
 }
 
+impl std::ops::DerefMut for DiffContext {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.ctx
+    }
+}
+
 impl DiffContext {
     #[must_use]
     pub fn new() -> Self {
@@ -23,7 +29,10 @@ impl DiffContext {
         }
     }
 
-    pub fn insert_func(
+    /// Insert a differentiable function into the Context
+    ///
+    /// This will also insert it as an regular function
+    pub fn insert_diff_func(
         &mut self,
         name: std::borrow::Cow<'static, str>,
         func: std::sync::Arc<impl DifferentiableFunc + Send + Sync + 'static>,
@@ -32,6 +41,17 @@ impl DiffContext {
         self.diff_funcs.insert(name, func);
     }
 
+    /// Differentiate an AST
+    ///
+    /// This will clone the AST and do the modification there.
+    ///
+    /// # Errors
+    ///
+    /// This will return an error in multiples occasion:
+    ///
+    /// - A function couldn't be differentiated
+    /// - A function isn't in the context
+    ///
     pub fn differentiate<'arena>(
         &self,
         arena: &'arena bumpalo::Bump,
@@ -40,6 +60,7 @@ impl DiffContext {
     ) -> Result<&'arena mut crate::Expr<'arena>, DiffError> {
         Ok(self.differentiate_inner(arena, expr.clone_in(arena), respect_to)?)
     }
+
     fn differentiate_inner<'arena>(
         &self,
         arena: &'arena bumpalo::Bump,
@@ -64,6 +85,8 @@ impl DiffContext {
                 rhs,
                 lhs,
             } => {
+                // f(x) = u*v
+                // f'(x) = u*v' + v * u'
                 let u = lhs;
                 let v = rhs;
 
@@ -89,10 +112,10 @@ impl DiffContext {
             Operator {
                 op: op @ (Op::UnaryMinus | Op::UnaryPlus),
                 rhs,
-                ..
+                lhs,
             } => Operator {
                 op,
-                lhs: arena.alloc(RealNumber { val: 0.0 }),
+                lhs,
                 rhs: self.differentiate_inner(arena, rhs, respect_to)?,
             },
             Operator {
@@ -354,7 +377,7 @@ mod funcs {
                 ctx,
                 arena,
                 args.get_mut(0)
-                    .ok_or(DiffError::UnableToDifferentiate)?
+                    .ok_or(DiffError::CalcError(crate::CalcError::InvalidArgumentCount))?
                     .clone_in(arena),
                 respect_to,
             )?;
@@ -385,11 +408,578 @@ mod funcs {
             Ok(div)
         }
     }
+
+    impl DiffFunc for Acosh {
+        fn get_diffed_func<'arena>(
+            &self,
+            ctx: &super::DiffContext,
+            arena: &'arena bumpalo::Bump,
+            _func_name: &'arena str,
+            mut args: bumpalo::collections::Vec<'arena, &'arena mut crate::Expr<'arena>>,
+            respect_to: &str,
+            diff_args: super::Differentiate<'arena>,
+        ) -> Result<&'arena mut crate::Expr<'arena>, DiffError> {
+            let g = (!args.is_empty())
+                .then(|| args.swap_remove(0))
+                .ok_or(DiffError::CalcError(crate::CalcError::InvalidArgumentCount))?;
+            let g_clone = g.clone_in(arena);
+            let g_prime = diff_args(ctx, arena, g.clone_in(arena), respect_to)?;
+
+            let g_plus_1 = arena.alloc(Operator {
+                op: Op::Plus,
+                rhs: arena.alloc(RealNumber { val: 1.0 }),
+                lhs: g,
+            });
+            let g_minus_1 = arena.alloc(Operator {
+                op: Op::Minus,
+                rhs: arena.alloc(RealNumber { val: 1.0 }),
+                lhs: g_clone,
+            });
+
+            let sqrt_g_plus_1 = arena.alloc(FunctionCall {
+                ident: arena.alloc_str("sqrt"),
+                args: bumpalo::vec![in arena; g_plus_1],
+            });
+            let sqrt_g_minus_1 = arena.alloc(FunctionCall {
+                ident: arena.alloc_str("sqrt"),
+                args: bumpalo::vec![in arena; g_minus_1],
+            });
+
+            let mult_sqrts = arena.alloc(Operator {
+                op: Op::Multiply,
+                rhs: sqrt_g_minus_1,
+                lhs: sqrt_g_plus_1,
+            });
+            let div = arena.alloc(Operator {
+                op: Op::Divide,
+                rhs: mult_sqrts,
+                lhs: g_prime,
+            });
+
+            Ok(div)
+        }
+    }
+
+    impl DiffFunc for Asin {
+        fn get_diffed_func<'arena>(
+            &self,
+            ctx: &super::DiffContext,
+            arena: &'arena bumpalo::Bump,
+            _func_name: &'arena str,
+            mut args: bumpalo::collections::Vec<'arena, &'arena mut crate::Expr<'arena>>,
+            respect_to: &str,
+            diff_args: super::Differentiate<'arena>,
+        ) -> Result<&'arena mut crate::Expr<'arena>, DiffError> {
+            let g = (!args.is_empty())
+                .then(|| args.remove(0))
+                .ok_or(DiffError::CalcError(crate::CalcError::InvalidArgumentCount))?;
+            let g_prime = diff_args(ctx, arena, g.clone_in(arena), respect_to)?;
+
+            let g_squared = arena.alloc(Operator {
+                op: Op::Pow,
+                rhs: arena.alloc(RealNumber { val: 2.0 }),
+                lhs: g,
+            });
+            let one_minus_g_squared = arena.alloc(Operator {
+                op: Op::Minus,
+                rhs: g_squared,
+                lhs: arena.alloc(RealNumber { val: 1.0 }),
+            });
+            let sqrt = arena.alloc(FunctionCall {
+                ident: arena.alloc_str("sqrt"),
+                args: bumpalo::vec![in arena; one_minus_g_squared],
+            });
+
+            let div = arena.alloc(Operator {
+                op: Op::Divide,
+                rhs: sqrt,
+                lhs: g_prime,
+            });
+
+            Ok(div)
+        }
+    }
+
+    impl DiffFunc for Asinh {
+        fn get_diffed_func<'arena>(
+            &self,
+            ctx: &super::DiffContext,
+            arena: &'arena bumpalo::Bump,
+            _func_name: &'arena str,
+            mut args: bumpalo::collections::Vec<'arena, &'arena mut crate::Expr<'arena>>,
+            respect_to: &str,
+            diff_args: super::Differentiate<'arena>,
+        ) -> Result<&'arena mut crate::Expr<'arena>, DiffError> {
+            let g = (!args.is_empty())
+                .then(|| args.remove(0))
+                .ok_or(DiffError::CalcError(crate::CalcError::InvalidArgumentCount))?;
+            let g_prime = diff_args(ctx, arena, g.clone_in(arena), respect_to)?;
+
+            let g_squared = arena.alloc(Operator {
+                op: Op::Pow,
+                rhs: arena.alloc(RealNumber { val: 2.0 }),
+                lhs: g,
+            });
+            let one_plus_g_squared = arena.alloc(Operator {
+                op: Op::Plus,
+                rhs: g_squared,
+                lhs: arena.alloc(RealNumber { val: 1.0 }),
+            });
+            let sqrt = arena.alloc(FunctionCall {
+                ident: arena.alloc_str("sqrt"),
+                args: bumpalo::vec![in arena; one_plus_g_squared],
+            });
+
+            let div = arena.alloc(Operator {
+                op: Op::Divide,
+                rhs: sqrt,
+                lhs: g_prime,
+            });
+
+            Ok(div)
+        }
+    }
+    impl DiffFunc for Atan {
+        fn get_diffed_func<'arena>(
+            &self,
+            ctx: &super::DiffContext,
+            arena: &'arena bumpalo::Bump,
+            _func_name: &'arena str,
+            mut args: bumpalo::collections::Vec<'arena, &'arena mut crate::Expr<'arena>>,
+            respect_to: &str,
+            diff_args: super::Differentiate<'arena>,
+        ) -> Result<&'arena mut crate::Expr<'arena>, DiffError> {
+            let g = (!args.is_empty())
+                .then(|| args.remove(0))
+                .ok_or(DiffError::CalcError(crate::CalcError::InvalidArgumentCount))?;
+            let g_prime = diff_args(ctx, arena, g.clone_in(arena), respect_to)?;
+
+            let g_squared = arena.alloc(Operator {
+                op: Op::Pow,
+                rhs: arena.alloc(RealNumber { val: 2.0 }),
+                lhs: g,
+            });
+            let one_plus_g_squared = arena.alloc(Operator {
+                op: Op::Plus,
+                rhs: g_squared,
+                lhs: arena.alloc(RealNumber { val: 1.0 }),
+            });
+
+            let div = arena.alloc(Operator {
+                op: Op::Divide,
+                rhs: one_plus_g_squared,
+                lhs: g_prime,
+            });
+
+            Ok(div)
+        }
+    }
+    impl DiffFunc for Atanh {
+        fn get_diffed_func<'arena>(
+            &self,
+            ctx: &super::DiffContext,
+            arena: &'arena bumpalo::Bump,
+            _func_name: &'arena str,
+            mut args: bumpalo::collections::Vec<'arena, &'arena mut crate::Expr<'arena>>,
+            respect_to: &str,
+            diff_args: super::Differentiate<'arena>,
+        ) -> Result<&'arena mut crate::Expr<'arena>, DiffError> {
+            let g = (!args.is_empty())
+                .then(|| args.remove(0))
+                .ok_or(DiffError::CalcError(crate::CalcError::InvalidArgumentCount))?;
+            let g_prime = diff_args(ctx, arena, g.clone_in(arena), respect_to)?;
+
+            let g_squared = arena.alloc(Operator {
+                op: Op::Pow,
+                rhs: arena.alloc(RealNumber { val: 2.0 }),
+                lhs: g,
+            });
+            let g_squared_minus_1 = arena.alloc(Operator {
+                op: Op::Plus,
+                lhs: g_squared,
+                rhs: arena.alloc(RealNumber { val: 1.0 }),
+            });
+
+            let div = arena.alloc(Operator {
+                op: Op::Divide,
+                rhs: g_squared_minus_1,
+                lhs: g_prime,
+            });
+
+            Ok(div)
+        }
+    }
+
+    impl DiffFunc for Cbrt {
+        fn get_diffed_func<'arena>(
+            &self,
+            ctx: &super::DiffContext,
+            arena: &'arena bumpalo::Bump,
+            _func_name: &'arena str,
+            mut args: bumpalo::collections::Vec<'arena, &'arena mut crate::Expr<'arena>>,
+            respect_to: &str,
+            diff_args: super::Differentiate<'arena>,
+        ) -> Result<&'arena mut crate::Expr<'arena>, DiffError> {
+            let g = (!args.is_empty())
+                .then(|| args.remove(0))
+                .ok_or(DiffError::CalcError(crate::CalcError::InvalidArgumentCount))?;
+            let g_prime = diff_args(ctx, arena, g.clone_in(arena), respect_to)?;
+
+            let g_squared = arena.alloc(Operator {
+                op: Op::Pow,
+                rhs: arena.alloc(RealNumber { val: 2.0 }),
+                lhs: g,
+            });
+            let cbrt_g_squared = arena.alloc(FunctionCall {
+                ident: arena.alloc_str("cbrt"),
+                args: bumpalo::vec![in arena; g_squared],
+            });
+
+            let mult = arena.alloc(Operator {
+                op: Op::Multiply,
+                rhs: arena.alloc(RealNumber { val: 3.0 }),
+                lhs: cbrt_g_squared,
+            });
+
+            let div = arena.alloc(Operator {
+                op: Op::Divide,
+                rhs: mult,
+                lhs: g_prime,
+            });
+
+            Ok(div)
+        }
+    }
+
+    impl DiffFunc for Sinh {
+        fn get_diffed_func<'arena>(
+            &self,
+            ctx: &super::DiffContext,
+            arena: &'arena bumpalo::Bump,
+            _func_name: &'arena str,
+            mut args: bumpalo::collections::Vec<'arena, &'arena mut crate::Expr<'arena>>,
+            respect_to: &str,
+            diff_args: super::Differentiate<'arena>,
+        ) -> Result<&'arena mut crate::Expr<'arena>, super::DiffError> {
+            let g_prime = diff_args(
+                ctx,
+                arena,
+                args.get_mut(0)
+                    .ok_or(DiffError::CalcError(crate::CalcError::InvalidArgumentCount))?
+                    .clone_in(arena),
+                respect_to,
+            )?;
+            let func = arena.alloc(FunctionCall {
+                ident: arena.alloc_str("cosh"),
+                args,
+            });
+            let mult = arena.alloc(Operator {
+                op: Op::Multiply,
+                rhs: g_prime,
+                lhs: func,
+            });
+
+            Ok(mult)
+        }
+    }
+
+    impl DiffFunc for Cosh {
+        fn get_diffed_func<'arena>(
+            &self,
+            ctx: &super::DiffContext,
+            arena: &'arena bumpalo::Bump,
+            _func_name: &'arena str,
+            mut args: bumpalo::collections::Vec<'arena, &'arena mut crate::Expr<'arena>>,
+            respect_to: &str,
+            diff_args: super::Differentiate<'arena>,
+        ) -> Result<&'arena mut crate::Expr<'arena>, super::DiffError> {
+            let g_prime = diff_args(
+                ctx,
+                arena,
+                args.get_mut(0)
+                    .ok_or(DiffError::CalcError(crate::CalcError::InvalidArgumentCount))?
+                    .clone_in(arena),
+                respect_to,
+            )?;
+            let func = arena.alloc(FunctionCall {
+                ident: arena.alloc_str("sinh"),
+                args,
+            });
+            let mult = arena.alloc(Operator {
+                op: Op::Multiply,
+                rhs: g_prime,
+                lhs: func,
+            });
+
+            let neg = arena.alloc(Operator {
+                op: Op::UnaryMinus,
+                lhs: arena.alloc(RealNumber { val: 0.0 }),
+                rhs: mult,
+            });
+
+            Ok(neg)
+        }
+    }
+
+    impl DiffFunc for Exp {
+        fn get_diffed_func<'arena>(
+            &self,
+            ctx: &super::DiffContext,
+            arena: &'arena bumpalo::Bump,
+            func_name: &'arena str,
+            mut args: bumpalo::collections::Vec<'arena, &'arena mut crate::Expr<'arena>>,
+            respect_to: &str,
+            diff_args: super::Differentiate<'arena>,
+        ) -> Result<&'arena mut crate::Expr<'arena>, super::DiffError> {
+            let g_prime = diff_args(
+                ctx,
+                arena,
+                args.get_mut(0)
+                    .ok_or(DiffError::CalcError(crate::CalcError::InvalidArgumentCount))?
+                    .clone_in(arena),
+                respect_to,
+            )?;
+            let func = arena.alloc(FunctionCall {
+                ident: arena.alloc_str(func_name),
+                args,
+            });
+            let mult = arena.alloc(Operator {
+                op: Op::Multiply,
+                rhs: g_prime,
+                lhs: func,
+            });
+
+            Ok(mult)
+        }
+    }
+
+    impl DiffFunc for Ln {
+        fn get_diffed_func<'arena>(
+            &self,
+            ctx: &super::DiffContext,
+            arena: &'arena bumpalo::Bump,
+            _func_name: &'arena str,
+            mut args: bumpalo::collections::Vec<'arena, &'arena mut crate::Expr<'arena>>,
+            respect_to: &str,
+            diff_args: super::Differentiate<'arena>,
+        ) -> Result<&'arena mut crate::Expr<'arena>, DiffError> {
+            let g = (!args.is_empty())
+                .then(|| args.remove(0))
+                .ok_or(DiffError::CalcError(crate::CalcError::InvalidArgumentCount))?;
+            let g_prime = diff_args(ctx, arena, g.clone_in(arena), respect_to)?;
+
+            let div = arena.alloc(Operator {
+                op: Op::Multiply,
+                rhs: g_prime,
+                lhs: g,
+            });
+
+            Ok(div)
+        }
+    }
+
+    impl DiffFunc for Log {
+        fn get_diffed_func<'arena>(
+            &self,
+            ctx: &super::DiffContext,
+            arena: &'arena bumpalo::Bump,
+            _func_name: &'arena str,
+            mut args: bumpalo::collections::Vec<'arena, &'arena mut crate::Expr<'arena>>,
+            respect_to: &str,
+            diff_args: super::Differentiate<'arena>,
+        ) -> Result<&'arena mut crate::Expr<'arena>, DiffError> {
+            let arg = (!args.is_empty())
+                .then(|| args.remove(0))
+                .ok_or(DiffError::CalcError(crate::CalcError::InvalidArgumentCount))?;
+
+            let base = (!args.is_empty())
+                .then(|| args.remove(0))
+                .ok_or(DiffError::CalcError(crate::CalcError::InvalidArgumentCount))?;
+            let log_g = arena.alloc(FunctionCall {
+                ident: arena.alloc_str("ln"),
+                args: bumpalo::vec![in arena; arg],
+            });
+            let log_base = arena.alloc(FunctionCall {
+                ident: arena.alloc_str("ln"),
+                args: bumpalo::vec![in arena; base],
+            });
+
+            let div = arena.alloc(Operator {
+                op: Op::Divide,
+                rhs: log_base,
+                lhs: log_g,
+            });
+
+            diff_args(ctx, arena, div, respect_to)
+        }
+    }
+    impl DiffFunc for Sqrt {
+        fn get_diffed_func<'arena>(
+            &self,
+            ctx: &super::DiffContext,
+            arena: &'arena bumpalo::Bump,
+            _func_name: &'arena str,
+            mut args: bumpalo::collections::Vec<'arena, &'arena mut crate::Expr<'arena>>,
+            respect_to: &str,
+            diff_args: super::Differentiate<'arena>,
+        ) -> Result<&'arena mut crate::Expr<'arena>, DiffError> {
+            let g = (!args.is_empty())
+                .then(|| args.remove(0))
+                .ok_or(DiffError::CalcError(crate::CalcError::InvalidArgumentCount))?;
+            let g_prime = diff_args(ctx, arena, g.clone_in(arena), respect_to)?;
+
+            let sqrt_g = arena.alloc(FunctionCall {
+                ident: arena.alloc_str("sqrt"),
+                args: bumpalo::vec![in arena; g],
+            });
+
+            let mult = arena.alloc(Operator {
+                op: Op::Multiply,
+                rhs: arena.alloc(RealNumber { val: 2.0 }),
+                lhs: sqrt_g,
+            });
+
+            let div = arena.alloc(Operator {
+                op: Op::Divide,
+                rhs: mult,
+                lhs: g_prime,
+            });
+
+            Ok(div)
+        }
+    }
+
+    impl DiffFunc for Tan {
+        fn get_diffed_func<'arena>(
+            &self,
+            ctx: &super::DiffContext,
+            arena: &'arena bumpalo::Bump,
+            _func_name: &'arena str,
+            mut args: bumpalo::collections::Vec<'arena, &'arena mut crate::Expr<'arena>>,
+            respect_to: &str,
+            diff_args: super::Differentiate<'arena>,
+        ) -> Result<&'arena mut crate::Expr<'arena>, DiffError> {
+            let g_prime = diff_args(
+                ctx,
+                arena,
+                args.get_mut(0)
+                    .ok_or(DiffError::CalcError(crate::CalcError::InvalidArgumentCount))?
+                    .clone_in(arena),
+                respect_to,
+            )?;
+
+            let cos_g = arena.alloc(FunctionCall {
+                ident: arena.alloc_str("cos"),
+                args,
+            });
+
+            let cos_g_squared = arena.alloc(Operator {
+                op: Op::Pow,
+                lhs: cos_g,
+                rhs: arena.alloc(RealNumber { val: 2.0 }),
+            });
+
+            let div = arena.alloc(Operator {
+                op: Op::Divide,
+                lhs: g_prime,
+                rhs: cos_g_squared,
+            });
+
+            Ok(div)
+        }
+    }
+
+    impl DiffFunc for Tanh {
+        fn get_diffed_func<'arena>(
+            &self,
+            ctx: &super::DiffContext,
+            arena: &'arena bumpalo::Bump,
+            _func_name: &'arena str,
+            mut args: bumpalo::collections::Vec<'arena, &'arena mut crate::Expr<'arena>>,
+            respect_to: &str,
+            diff_args: super::Differentiate<'arena>,
+        ) -> Result<&'arena mut crate::Expr<'arena>, DiffError> {
+            let g_prime = diff_args(
+                ctx,
+                arena,
+                args.get_mut(0)
+                    .ok_or(DiffError::CalcError(crate::CalcError::InvalidArgumentCount))?
+                    .clone_in(arena),
+                respect_to,
+            )?;
+
+            let cosh_g = arena.alloc(FunctionCall {
+                ident: arena.alloc_str("cosh"),
+                args,
+            });
+
+            let cosh_g_squared = arena.alloc(Operator {
+                op: Op::Pow,
+                lhs: cosh_g,
+                rhs: arena.alloc(RealNumber { val: 2.0 }),
+            });
+
+            let div = arena.alloc(Operator {
+                op: Op::Divide,
+                lhs: g_prime,
+                rhs: cosh_g_squared,
+            });
+
+            Ok(div)
+        }
+    }
+
+    impl DiffFunc for Norm {
+        fn get_diffed_func<'arena>(
+            &self,
+            ctx: &super::DiffContext,
+            arena: &'arena bumpalo::Bump,
+            _func_name: &'arena str,
+            mut args: bumpalo::collections::Vec<'arena, &'arena mut crate::Expr<'arena>>,
+            respect_to: &str,
+            diff_args: super::Differentiate<'arena>,
+        ) -> Result<&'arena mut crate::Expr<'arena>, DiffError> {
+            let g_prime = diff_args(
+                ctx,
+                arena,
+                args.get_mut(0)
+                    .ok_or(DiffError::CalcError(crate::CalcError::InvalidArgumentCount))?
+                    .clone_in(arena),
+                respect_to,
+            )?;
+
+            let func = arena.alloc(FunctionCall {
+                ident: arena.alloc_str("sign"),
+                args,
+            });
+
+            let mult = arena.alloc(Operator {
+                op: Op::Multiply,
+                rhs: func,
+                lhs: g_prime,
+            });
+
+            Ok(mult)
+        }
+    }
 }
 
-pub fn add_all_diff(ctx: &mut DiffContext) {
-    ctx.insert_func("cos".into(), crate::funcs::Cos.into());
-    ctx.insert_func("sin".into(), crate::funcs::Sin.into());
+#[allow(clippy::wildcard_imports)]
+pub fn add_all_diff_functions(ctx: &mut DiffContext) {
+    use crate::funcs::*;
+
+    macro_rules! add {
+        ($name:ident) => {
+            ctx.insert_diff_func($name::NAME.into(), $name.into());
+        };
+
+        ($($name:ident),+ $(,)?) => {
+            $(add!($name));+
+        };
+    }
+
+    add! {Sin, Cos, Tan, Asin, Acos, Atan, Sinh, Cosh, Tanh, Asinh, Acosh, Atanh, Exp, Ln, Log, Sqrt, Cbrt, Norm,};
+    Sign::add_to_context(&mut ctx.ctx);
 }
 
 #[cfg(test)]
@@ -399,7 +989,7 @@ mod tests {
             #[test]
             fn $name() {
                 let mut ctx = super::DiffContext::new();
-                super::add_all_diff(&mut ctx);
+                super::add_all_diff_functions(&mut ctx);
 
                 let arena = bumpalo::Bump::with_capacity(1024);
                 let expr = crate::Expr::parse(&arena, $input, &ctx.get_reserved_names()).unwrap();
@@ -415,7 +1005,7 @@ mod tests {
             #[allow(unused_mut)]
             fn $name() {
                 let mut ctx = super::DiffContext::new();
-                super::add_all_diff(&mut ctx);
+                super::add_all_diff_functions(&mut ctx);
 
                 let arena = bumpalo::Bump::with_capacity(1024);
                 let expr = crate::Expr::parse(&arena, $input, &ctx.get_reserved_names()).unwrap();
