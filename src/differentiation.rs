@@ -32,7 +32,15 @@ impl DiffContext {
         self.diff_funcs.insert(name, func);
     }
 
-    pub fn differentiate_inner<'arena>(
+    pub fn differentiate<'arena>(
+        &self,
+        arena: &'arena bumpalo::Bump,
+        expr: &crate::Expr<'_>,
+        respect_to: &str,
+    ) -> Result<&'arena mut crate::Expr<'arena>, DiffError> {
+        Ok(self.differentiate_inner(arena, expr.clone_in(arena), respect_to)?)
+    }
+    fn differentiate_inner<'arena>(
         &self,
         arena: &'arena bumpalo::Bump,
         expr: &'arena mut crate::Expr<'arena>,
@@ -40,16 +48,17 @@ impl DiffContext {
     ) -> Result<&'arena mut crate::Expr<'arena>, DiffError> {
         use crate::Expr::*;
         use crate::Operator as Op;
-        let res: Option<&'arena mut crate::Expr> = match expr {
+        let expr_owned = std::mem::replace(expr, RealNumber { val: 0.0 });
+        let res: crate::Expr = match expr_owned {
             Operator {
-                op: Op::Plus | Op::Minus,
+                op: op @ (Op::Plus | Op::Minus),
                 rhs,
                 lhs,
-            } => {
-                self.differentiate_inner(arena, lhs, respect_to)?;
-                self.differentiate_inner(arena, rhs, respect_to)?;
-                None
-            }
+            } => Operator {
+                op,
+                lhs: self.differentiate_inner(arena, lhs, respect_to)?,
+                rhs: self.differentiate_inner(arena, rhs, respect_to)?,
+            },
             Operator {
                 op: Op::Multiply,
                 rhs,
@@ -75,22 +84,51 @@ impl DiffContext {
                     rhs: left_multiplication,
                     lhs: right_multiplication,
                 };
-                Some(arena.alloc(addition))
+                addition
             }
             Operator {
-                op: Op::UnaryMinus | Op::UnaryPlus,
+                op: op @ (Op::UnaryMinus | Op::UnaryPlus),
                 rhs,
                 ..
+            } => Operator {
+                op,
+                lhs: arena.alloc(RealNumber { val: 0.0 }),
+                rhs: self.differentiate_inner(arena, rhs, respect_to)?,
+            },
+            Operator {
+                op: Op::Modulo,
+                lhs: input,
+                rhs: mod_,
             } => {
-                *rhs = self.differentiate_inner(arena, rhs, respect_to)?;
-                None
+                let lhs_diff = self.differentiate_inner(arena, input, respect_to)?;
+
+                Operator {
+                    op: Op::Modulo,
+                    rhs: mod_,
+                    lhs: lhs_diff,
+                }
             }
+            Operator {
+                op: Op::Pow,
+                lhs: base,
+                rhs: power,
+            } => {
+                let alt_rep = arena.alloc(FunctionCall {
+                    ident: arena.alloc_str("exp"),
+                    args: bumpalo::vec![in arena; arena.alloc(Operator { op: Op::Multiply, rhs: power, lhs: arena.alloc(FunctionCall { ident: arena.alloc_str("ln"), args: bumpalo::vec![in arena; base] }) })],
+                });
+
+                let res = self.differentiate_inner(arena, alt_rep, respect_to)?;
+
+                std::mem::replace(res, RealNumber { val: 0.0 })
+            }
+
             Operator {
                 op: Op::Divide,
                 rhs,
                 lhs,
             } => {
-                // u*v' - v*u'
+                // (u*v' - v*u') / v²
                 let u = lhs;
                 let v = rhs;
                 let v_clone = v.clone_in(arena);
@@ -124,32 +162,29 @@ impl DiffContext {
                     rhs: bottom,
                 };
 
-                Some(arena.alloc(res))
+                res
             }
-            RealNumber { val } => todo!(),
-            ImaginaryNumber { val } => todo!(),
-            ComplexNumber { val } => todo!(),
-            Binding { name } if *name == respect_to => {}
-            Binding { name } => {}
-            FunctionCall { ident, args } => {
-                let FunctionCall { ident, args } = std::mem::replace(expr, RealNumber { val: 0.0 }) else {return Err(DiffError::UnknownError);};
-                Some(
-                    self.diff_funcs
-                        .get(ident)
-                        .ok_or(DiffError::CalcError(crate::CalcError::MissingFunction))?
-                        .get_diffed_func(
-                            arena,
-                            ident,
-                            args,
-                            respect_to,
-                            DiffContext::differentiate_inner,
-                        )?,
-                )
-            }
+            RealNumber { .. } => RealNumber { val: 0.0 },
+            ImaginaryNumber { .. } => RealNumber { val: 0.0 },
+            ComplexNumber { .. } => RealNumber { val: 0.0 },
+            Binding { name } if name == respect_to => RealNumber { val: 1.0 },
+            Binding { .. } => RealNumber { val: 0.0 },
+            FunctionCall { ident, args } => std::mem::replace(
+                self.diff_funcs
+                    .get(ident)
+                    .ok_or(DiffError::CalcError(crate::CalcError::MissingFunction))?
+                    .get_diffed_func(
+                        &self,
+                        arena,
+                        ident,
+                        args,
+                        respect_to,
+                        DiffContext::differentiate_inner,
+                    )?,
+                RealNumber { val: 0.0 },
+            ),
         };
-        if let Some(r) = res {
-            std::mem::swap(expr, r);
-        }
+        *expr = res;
         Ok(expr)
     }
 }
@@ -159,7 +194,7 @@ impl Default for DiffContext {
         Self::new()
     }
 }
-#[derive()]
+#[derive(Debug)]
 pub enum DiffError {
     CalcError(crate::CalcError),
     Boxed(Box<dyn std::error::Error + Send + Sync>),
@@ -169,7 +204,33 @@ pub enum DiffError {
     UnknownError,
 }
 
-type Differentiate<'arena> = fn(
+impl std::fmt::Display for DiffError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CalcError(c) => c.fmt(f),
+            Self::Boxed(b) => b.fmt(f),
+            Self::UnableToDifferentiate => {
+                write!(f, "Unable to differentiate the given expression")
+            }
+            Self::Panicked => {
+                write!(
+                    f,
+                    "An function has panicked while differentiating a function"
+                )
+            }
+            Self::UnknownError => {
+                write!(f, "An unknown error has occured")
+            }
+            Self::DerivativeNotFound => {
+                write!(f, "No derivative was found")
+            }
+        }
+    }
+}
+
+impl std::error::Error for DiffError {}
+
+pub type Differentiate<'arena> = fn(
     context: &DiffContext,
     arena: &'arena bumpalo::Bump,
     expr: &'arena mut crate::Expr<'arena>,
@@ -193,10 +254,182 @@ pub trait DifferentiableFunc: crate::Func + Send + Sync {
     /// To differentiate the arguments, use the [`Differentiate`](Differentiate)
     fn get_diffed_func<'arena>(
         &self,
+        ctx: &DiffContext,
         arena: &'arena bumpalo::Bump,
         func_name: &'arena str,
         args: bumpalo::collections::Vec<'arena, &'arena mut crate::Expr<'arena>>,
         respect_to: &str,
         diff_args: Differentiate<'arena>,
     ) -> Result<&'arena mut crate::Expr<'arena>, DiffError>;
+}
+
+mod funcs {
+    use super::DiffError;
+    use super::DifferentiableFunc as DiffFunc;
+    use crate::funcs::*;
+    use crate::Expr::*;
+    use crate::Operator as Op;
+
+    impl DiffFunc for Sin {
+        fn get_diffed_func<'arena>(
+            &self,
+            ctx: &super::DiffContext,
+            arena: &'arena bumpalo::Bump,
+            _func_name: &'arena str,
+            mut args: bumpalo::collections::Vec<'arena, &'arena mut crate::Expr<'arena>>,
+            respect_to: &str,
+            diff_args: super::Differentiate<'arena>,
+        ) -> Result<&'arena mut crate::Expr<'arena>, super::DiffError> {
+            let g_prime = diff_args(
+                ctx,
+                arena,
+                args.get_mut(0)
+                    .ok_or(DiffError::CalcError(crate::CalcError::InvalidArgumentCount))?
+                    .clone_in(arena),
+                respect_to,
+            )?;
+            let func = arena.alloc(FunctionCall {
+                ident: arena.alloc_str("cos"),
+                args,
+            });
+            let mult = arena.alloc(Operator {
+                op: Op::Multiply,
+                rhs: g_prime,
+                lhs: func,
+            });
+
+            Ok(mult)
+        }
+    }
+
+    impl DiffFunc for Cos {
+        fn get_diffed_func<'arena>(
+            &self,
+            ctx: &super::DiffContext,
+            arena: &'arena bumpalo::Bump,
+            _func_name: &'arena str,
+            mut args: bumpalo::collections::Vec<'arena, &'arena mut crate::Expr<'arena>>,
+            respect_to: &str,
+            diff_args: super::Differentiate<'arena>,
+        ) -> Result<&'arena mut crate::Expr<'arena>, super::DiffError> {
+            let g_prime = diff_args(
+                ctx,
+                arena,
+                args.get_mut(0)
+                    .ok_or(DiffError::CalcError(crate::CalcError::InvalidArgumentCount))?
+                    .clone_in(arena),
+                respect_to,
+            )?;
+            let func = arena.alloc(FunctionCall {
+                ident: arena.alloc_str("sin"),
+                args,
+            });
+            let mult = arena.alloc(Operator {
+                op: Op::Multiply,
+                rhs: g_prime,
+                lhs: func,
+            });
+
+            let neg = arena.alloc(Operator {
+                op: Op::UnaryMinus,
+                lhs: arena.alloc(RealNumber { val: 0.0 }),
+                rhs: mult,
+            });
+
+            Ok(neg)
+        }
+    }
+
+    impl DiffFunc for Acos {
+        fn get_diffed_func<'arena>(
+            &self,
+            ctx: &super::DiffContext,
+            arena: &'arena bumpalo::Bump,
+            _func_name: &'arena str,
+            mut args: bumpalo::collections::Vec<'arena, &'arena mut crate::Expr<'arena>>,
+            respect_to: &str,
+            diff_args: super::Differentiate<'arena>,
+        ) -> Result<&'arena mut crate::Expr<'arena>, super::DiffError> {
+            let g_prime = diff_args(
+                ctx,
+                arena,
+                args.get_mut(0)
+                    .ok_or(DiffError::UnableToDifferentiate)?
+                    .clone_in(arena),
+                respect_to,
+            )?;
+            let _1_minus_g = arena.alloc(Operator {
+                op: Op::Minus,
+                rhs: arena.alloc(Operator {
+                    op: Op::Pow,
+                    rhs: arena.alloc(RealNumber { val: 2.0 }),
+                    lhs: (!args.is_empty())
+                        .then(|| args.swap_remove(0))
+                        .ok_or(DiffError::CalcError(crate::CalcError::InvalidArgumentCount))?,
+                }),
+                lhs: arena.alloc(RealNumber { val: 1.0 }),
+            });
+
+            let func = arena.alloc(FunctionCall {
+                ident: arena.alloc_str("sqrt"),
+                args: bumpalo::vec![in arena;
+
+                ],
+            });
+            let div = arena.alloc(Operator {
+                op: Op::Divide,
+                lhs: g_prime,
+                rhs: func,
+            });
+
+            Ok(div)
+        }
+    }
+}
+
+pub fn add_all_diff(ctx: &mut DiffContext) {
+    ctx.insert_func("cos".into(), crate::funcs::Cos.into());
+    ctx.insert_func("sin".into(), crate::funcs::Sin.into());
+}
+
+#[cfg(test)]
+mod tests {
+    macro_rules! test_diff {
+        ($name:ident: $input:literal $(=)?) => {
+            #[test]
+            fn $name() {
+                let mut ctx = super::DiffContext::new();
+                super::add_all_diff(&mut ctx);
+
+                let arena = bumpalo::Bump::with_capacity(1024);
+                let expr = crate::Expr::parse(&arena, $input, &ctx.get_reserved_names()).unwrap();
+                let diff = ctx.differentiate(&arena, expr, "x").unwrap();
+
+                dbg!(diff.to_string());
+                panic!();
+            }
+        };
+
+        ($name:ident: $input:literal = $output:literal) => {
+            #[test]
+            #[allow(unused_mut)]
+            fn $name() {
+                let mut ctx = super::DiffContext::new();
+                super::add_all_diff(&mut ctx);
+
+                let arena = bumpalo::Bump::with_capacity(1024);
+                let expr = crate::Expr::parse(&arena, $input, &ctx.get_reserved_names()).unwrap();
+                let diff = ctx.differentiate(&arena, expr, "x").unwrap();
+
+                assert_eq!(diff.to_string(), $output);
+            }
+        };
+    }
+
+    test_diff! {number: "1 + 1" = "0 + 0"}
+
+    test_diff! {simple_sin: "sin(5x)" = "cos(5 * x) * (0 * x + 1 * 5)"}
+
+    test_diff! {complex_no_pow: "((2x + 5i) * x) / (7x - 1)" =
+    "(((0 * x + 1 * 2 + 0 * i + 0 * 5) * x + 1 * (2 * x + 5 * i)) * (7 * x - 1) - (0 * x + 1 * 7 - 0) * (2 * x + 5 * i) * x) / (7 * x - 1) ^ 2"}
 }

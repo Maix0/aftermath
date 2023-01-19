@@ -47,7 +47,10 @@ pub enum Expr<'arena> {
 impl<'arena> Expr<'arena> {
     /// Clone an AST with another backing [arena](bumpalo::Bump)
     #[allow(clippy::mut_from_ref)]
-    pub fn clone_in(&self, arena: &'arena Bump) -> &'arena mut Self {
+    pub fn clone_in<'new_arena>(
+        &self,
+        arena: &'new_arena Bump,
+    ) -> &'new_arena mut Expr<'new_arena> {
         use Expr::{Binding, ComplexNumber, FunctionCall, ImaginaryNumber, Operator, RealNumber};
         arena.alloc(match self {
             RealNumber { val } => RealNumber { val: *val },
@@ -298,14 +301,14 @@ impl<'arena> Expr<'arena> {
         let iter = iter.fuse();
         // let iter = iter.inspect(|t| print(&t, CURRENT_LEVEL.with(std::cell::Cell::get)));
 
-        Self::parse_iter(arena, iter, &(true.into()))
+        Self::parse_iter(arena, iter, &(true.into()), 0)
     }
 
     fn parse_iter<'input, 'words: 'input + 'word, 'word: 'input>(
         arena: &'arena Bump,
         mut iter: impl Iterator<Item = Result<Token<'input>, InvalidToken<'input>>>,
         check_func_sep: &std::cell::Cell<bool>,
-        // level: u16,
+        level: u16,
     ) -> Result<&'arena mut Expr<'arena>, BuildError<'input>> {
         let mut output = Vec::<&mut Self>::new();
         let mut operator = Vec::<Token<'input>>::new();
@@ -315,7 +318,13 @@ impl<'arena> Expr<'arena> {
                 //print(&format_args!("Output Buffer: {output:?}"), level);
                 match token? {
                     Token::Whitespace => {
-                        Self::handle_whitespace(arena, &mut iter, check_func_sep, &mut output)?;
+                        Self::handle_whitespace(
+                            arena,
+                            &mut iter,
+                            check_func_sep,
+                            &mut output,
+                            level,
+                        )?;
                     }
                     Token::Literal(v) => output.push(arena.alloc(Expr::RealNumber { val: v })),
                     Token::Ident(name) if name.len() == 1 => {
@@ -333,7 +342,7 @@ impl<'arena> Expr<'arena> {
                     }
 
                     Token::Comma => {
-                        Self::handle_comma(arena, &mut operator, &mut output)?;
+                        Self::handle_comma(arena, &mut operator, &mut output /* level */)?;
                     }
                     t @ Token::LeftParenthesis if !was_function_call => operator.push(t),
                     Token::LeftParenthesis => was_function_call = false,
@@ -393,7 +402,7 @@ impl<'arena> Expr<'arena> {
         //print(&format_args!("End: {}", output.len()), level);
         output.pop().ok_or(match output.len() {
             0 => BuildError::UnkownError,
-            _ => BuildError::MissingOperator,
+            _ => dbg!(BuildError::MissingOperator),
         })
     }
 
@@ -401,6 +410,7 @@ impl<'arena> Expr<'arena> {
         arena: &'arena Bump,
         operator: &mut Vec<Token>,
         output: &mut Vec<&'arena mut Self>,
+        // level: u16,
     ) -> Result<&'arena mut Self, BuildError<'input>> {
         loop {
             let Some(op) = operator.pop() else {
@@ -426,7 +436,8 @@ impl<'arena> Expr<'arena> {
                 _ => (),
             }
         }
-        // print(&format_args!("Comma: {}", output.len()), level);
+        // print(&format_args!("Comma: {:?}", &output), level - 1);
+        // CURRENT_LEVEL.with(|c| c.set(level - 1));
         output.pop().ok_or(match output.len() {
             0 => BuildError::UnkownError,
             _ => BuildError::MissingOperator,
@@ -479,6 +490,7 @@ impl<'arena> Expr<'arena> {
         iter: &mut impl Iterator<Item = Result<Token<'input>, InvalidToken<'input>>>,
         check_func_sep: &std::cell::Cell<bool>,
         output: &mut [&'arena mut Self],
+        level: u16,
     ) -> Result<(), BuildError<'input>> {
         check_func_sep.set(false);
         let parens_count = std::cell::Cell::new(1u16);
@@ -496,6 +508,7 @@ impl<'arena> Expr<'arena> {
                         parens_count.set(if let Some(n) = parens_count.get().checked_add(1) {
                             n
                         } else {
+                            // print("Error underflow", level);
                             error.set(true);
                             255
                         });
@@ -504,6 +517,7 @@ impl<'arena> Expr<'arena> {
                         parens_count.set(if let Some(n) = parens_count.get().checked_sub(1) {
                             n
                         } else {
+                            // print("Error overflow", level);
                             error.set(true);
                             255
                         });
@@ -511,14 +525,19 @@ impl<'arena> Expr<'arena> {
                     _ => (),
                 }
             })
-            .take_while(|_| parens_count.get() != 0 || !child_check_func_sep.get());
+            .take_while(|token| {
+                !(matches!(token, Ok(Token::Comma) if child_check_func_sep.get())
+                    || matches!(token, Ok(Token::RightParenthesis) if parens_count.get() == 0,))
+            });
         // print("LEVEL START", level);
+        // CURRENT_LEVEL.with(|c| c.set(level));
         let ast = Self::parse_iter(
             arena,
             &mut sub_iter as &mut dyn Iterator<Item = Result<Token<'_>, InvalidToken<'_>>>,
             &child_check_func_sep,
-            // level + 1,
+            level + 1,
         );
+        // CURRENT_LEVEL.with(|c| c.set(level));
         // print(
         //     &format_args!(
         //         "LEVEL END: {}",
@@ -530,12 +549,12 @@ impl<'arena> Expr<'arena> {
             return Err(dbg!(BuildError::UnkownError));
         }
         check_func_sep.set(true);
+        // print(&format_args!("output = {:?}", &output), level);
         match output.last_mut() {
             Some(Expr::FunctionCall { args, .. }) => {
                 args.push(ast?);
             }
             _ => {
-                // print(&output, level);
                 return Err(BuildError::MissingOperator);
             }
         }
