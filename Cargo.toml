@@ -3,15 +3,16 @@ authors = ["Maieul Boyer <maieul.boyer@gmail.com>"]
 name = "aftermath"
 version = "1.1.0"
 edition = "2021"
-description= "A crate to parse and evaluate complex math expression"
+description = "A crate to parse and evaluate complex math expression"
 license = "MIT OR Apache-2.0"
 categories = ["parser-implementations", "mathematics"]
 keywords = ["expression", "evaluation"]
 repository = "https://github.com/Maix0/aftermath"
 
 [features]
-default = ["differentiation"]
+default = ["differentiation", "reduce"]
 differentiation = []
+reduce = []
 
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

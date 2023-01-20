@@ -165,6 +165,25 @@ impl Context {
     pub fn is_zero(&self, f: f64) -> bool {
         f.abs() < self.zero_precision
     }
+
+    /// Check that the given [`Complex`](num_complex::Complex64) number is close enough to zero to
+    /// be considered equal to zero
+    #[must_use]
+    pub fn is_complex_zero(&self, c: num_complex::Complex64) -> bool {
+        self.is_zero(c.re) && self.is_zero(c.im)
+    }
+
+    /// Check if a [`f64`](f64) is close enough to another one to be considered equal
+    #[must_use]
+    pub fn is_near(&self, f: f64, to: f64) -> bool {
+        (f - to).abs() < self.zero_precision
+    }
+
+    /// Check if a complex number is near enough to another one to be considered equal
+    #[must_use]
+    pub fn is_complex_near(&self, c: num_complex::Complex64, to: num_complex::Complex64) -> bool {
+        self.is_near(c.re, to.re) && self.is_near(c.im, to.im)
+    }
 }
 
 #[derive(Debug)]
@@ -353,6 +372,16 @@ pub mod funcs {
         Arg::add_to_context(ctx);
         Norm::add_to_context(ctx);
         Conj::add_to_context(ctx);
+    }
+
+    #[deprecated = "Theses fuction are not only defined for real number \n Use `add_classic_functions`"]
+    pub fn add_real_functions(ctx: &mut Context) {
+        Exp::add_to_context(ctx);
+        Ln::add_to_context(ctx);
+        Sqrt::add_to_context(ctx);
+        Cbrt::add_to_context(ctx);
+        Log::add_to_context(ctx);
+        Sign::add_to_context(ctx);
     }
 
     pub fn add_classic_functions(ctx: &mut Context) {

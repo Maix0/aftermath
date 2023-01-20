@@ -16,6 +16,8 @@ mod token_stream;
 
 #[cfg(feature = "differentiation")]
 pub mod differentiation;
+#[cfg(feature = "reduce")]
+pub mod reduce;
 
 pub use eval::funcs;
 pub use eval::rpn;
