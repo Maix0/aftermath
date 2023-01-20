@@ -154,7 +154,7 @@ fn function_pass<'input>(
         } else {
             let next = iter.next();
             match &next {
-                Some(Ok(token_stream::Token::Ident(word))) if word.len() > 1 => {
+                Some(Ok(token_stream::Token::ReservedWord(_))) => {
                     if let Some(Ok(token_stream::Token::LeftParenthesis)) = iter.peek() {
                         need_sep = Some(2);
                     }
@@ -186,17 +186,16 @@ fn implicit_multiple_pass<'input>(
             }
         } else {
             let next = iter.next();
-            if matches!(&next, Some(Ok(token_stream::Token::Ident(w))) if w.len() == 1)
-                || matches!(
-                    &next,
-                    Some(Ok(
-                        token_stream::Token::Literal(_) | token_stream::Token::RightParenthesis
-                    ))
-                )
-            {
+            if matches!(
+                &next,
+                Some(Ok(token_stream::Token::Ident(_)
+                    | token_stream::Token::Literal(_)
+                    | token_stream::Token::RightParenthesis))
+            ) {
                 if let Some(Ok(
                     token_stream::Token::LeftParenthesis
                     | token_stream::Token::Ident(_)
+                    | token_stream::Token::ReservedWord(_)
                     | token_stream::Token::Literal(_),
                 )) = iter.peek()
                 {
@@ -327,12 +326,12 @@ impl<'arena> Expr<'arena> {
                         )?;
                     }
                     Token::Literal(v) => output.push(arena.alloc(Expr::RealNumber { val: v })),
-                    Token::Ident(name) if name.len() == 1 => {
+                    Token::Ident(name) => {
                         output.push(arena.alloc(Expr::Binding {
                             name: arena.alloc_str(name),
                         }));
                     }
-                    Token::Ident(name) => {
+                    Token::ReservedWord(name) => {
                         was_function_call = true;
                         // print("FUNCTION CALL", level);
                         output.push(arena.alloc(Expr::FunctionCall {
@@ -666,7 +665,7 @@ impl<'arena> Expr<'arena> {
 mod tests {
     use super::token_stream::{
         stream_to_string,
-        Token::{Comma, Ident, LeftParenthesis, Literal, RightParenthesis, Whitespace},
+        Token::{Comma, LeftParenthesis, Literal, ReservedWord, RightParenthesis, Whitespace},
     };
     use super::*;
 
@@ -681,7 +680,7 @@ mod tests {
         assert_eq!(
             res.unwrap(),
             vec![
-                Ident("max"),
+                ReservedWord("max"),
                 LeftParenthesis,
                 Whitespace,
                 Literal(1.0),

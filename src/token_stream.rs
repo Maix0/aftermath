@@ -14,6 +14,7 @@ pub fn stream_to_string<'input>(
         iter.map(|token| {
             token.map(|t| match t {
                 Token::Ident(a) => Cow::Borrowed(a),
+                Token::ReservedWord(a) => Cow::Borrowed(a),
                 Token::Comma => Cow::Borrowed(","),
                 Token::LeftParenthesis => Cow::Borrowed("("),
                 Token::RightParenthesis => Cow::Borrowed(")"),
@@ -61,6 +62,7 @@ pub enum Token<'input> {
     LeftParenthesis = Token::LEFT_PARENS,
     RightParenthesis = Token::RIGHT_PARENS,
     Comma = Token::COMMA,
+    ReservedWord(&'input str),
 }
 
 // Helper enum used to wrap two iterator in a single enum
@@ -125,18 +127,16 @@ impl<'input> Token<'input> {
                     .find_map(|&word| input.ends_with(word).then_some((input, word)))
                     .map(|(input, word)| input.split_at(input.bytes().len() - word.bytes().len()))
                     .map(|(idents, word)| {
-                        if idents.starts_with('_') {
-                            IterEither::Left(std::iter::once(&word[1..]))
-                        } else {
-                            IterEither::Right(
-                                idents
-                                    .split("")
-                                    .filter(|s| !s.is_empty())
-                                    .chain(std::iter::once(word)),
-                            )
-                        }
+                        ({
+                            if idents.starts_with('_') {
+                                IterEither::Left(std::iter::once(&idents[1..]))
+                            } else {
+                                IterEither::Right(idents.split("").filter(|s| !s.is_empty()))
+                            }
+                        })
+                        .map(Token::Ident)
+                        .chain(std::iter::once(Token::ReservedWord(word)))
                     })
-                    .map(|i| i.map(Token::Ident))
                     .map_or_else(
                         || {
                             IterEither::Right(
@@ -593,7 +593,7 @@ mod test {
                             Token::Ident("o"),
                             Token::Ident("r"),
                             Token::Ident("d"),
-                            Token::Ident(word),
+                            Token::ReservedWord(word),
                         ]
                     );
                 }
