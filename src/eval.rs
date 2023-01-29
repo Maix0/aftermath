@@ -1,6 +1,7 @@
 use std::borrow::{Borrow, Cow};
 
 use std::collections::HashMap;
+#[derive(Clone)]
 pub struct Context {
     pub zero_precision: f64,
     variables: HashMap<Cow<'static, str>, num_complex::Complex64>,

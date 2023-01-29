@@ -1,3 +1,4 @@
+#[derive(Clone)]
 pub struct DiffContext {
     ctx: crate::Context,
     diff_funcs: std::collections::HashMap<
