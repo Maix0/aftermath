@@ -48,6 +48,18 @@ impl Context {
 
     /// # Errors
     ///
+    /// Return an error if the requested binding isn't found in this context
+    pub fn get_binding_mut(
+        &mut self,
+        name: &str,
+    ) -> Result<&mut num_complex::Complex64, CalcError> {
+        self.variables
+            .get_mut(name)
+            .ok_or(CalcError::MissingBindings)
+    }
+
+    /// # Errors
+    ///
     /// Return an error if the requested function isn't found in this context
     pub fn get_func(
         &self,
