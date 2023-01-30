@@ -494,6 +494,7 @@ pub mod rpn {
         Op(Operator),
     }
 
+    #[derive(Debug)]
     #[allow(clippy::module_name_repetitions)]
     /// A complied AST into a linear stream of operation
     /// Evaluating this stream of token is faster than evaluating an AST since the memory is linear
